@@ -1,63 +1,110 @@
 # dirge workflow plugin
-# Adds architect → implementor → review workflow
+# Drives architect → implementor → review phases automatically
+# Inversion of control: harness drives the model, not vice versa
+
+# Declare which hooks this plugin subscribes to
+(def hooks ["on-init" "on-prompt" "on-response" "on-tool-start"])
 
 (var phase :idle)
 
-(defn on-init [ctx]
+(defn workflow-on-init [ctx]
   (harness/log (string "workflow loaded (model: " (ctx :model) ")"))
   (set phase :idle)
   nil)
 
-(defn on-prompt [ctx]
-  (let [prompt (ctx :prompt)]
-    # Detect feature requests
-    (def pattern (string "\\b("
-                    "add a feature|implement feature|add support for|"
-                    "build a|create a|add .* to"
-                    ")\\b"))
-    (if (peg/match (peg/compile pattern) prompt)
-      (do
-        (harness/log "workflow: detected feature request")
-        (harness/set-phase :architect)
-        # Request architect prompt — harness will send this to LLM
-        (harness/request-prompt (string
-          "ARCHITECT MODE — Plan this feature step by step.\n\n"
-          "1. First consider code layout — where should this code live?\n"
-          "2. Produce a high-level plan as a mermaidjs diagram\n"
-          "3. Plan file structure (list files to create/modify)\n"
-          "4. Create function stubs and type signatures\n"
-          "5. Write PLAN.md with the full plan\n\n"
-          "Feature: " prompt))
-        "Starting architect phase...")
-      # After architect completes, check if we should enter implementor
-      (if (= phase :architect)
-        (do
-          (harness/set-phase :implementor)
-          (harness/request-prompt (string
-            "IMPLEMENTOR MODE — Follow TDD strictly.\n\n"
-            "1. Write a failing test first\n"
-            "2. Implement minimal code to pass\n"
-            "3. Run tests, verify green\n"
-            "4. Refactor if needed\n\n"
-            "Use the plan from the architect phase to guide implementation."))
-          "Starting implementor phase...")
-        (if (= phase :implementor)
-          (do
-            (harness/set-phase :review)
-            (harness/request-prompt (string
-              "REVIEW MODE — Review all changes, find and fix bugs.\n\n"
-              "1. Review ALL changes made\n"
-              "2. Check for bugs, edge cases, error handling\n"
-              "3. Run tests and fix any failures\n"
-              "4. Ensure TDD pattern was followed\n\n"
-              "After review, fix any issues found."))
-            "Starting review phase...")
-          nil)))))
+(defn- detect-feature-request [prompt]
+  (def pattern (string "\\b("
+                  "add a feature|implement feature|add support for|"
+                  "build a|create a|add .* to|feature request|"
+                  "new feature|enhancement|coding task"
+                  ")\\b"))
+  (peg/match (peg/compile pattern) prompt))
 
-(defn on-response [ctx]
-  # After each response, advance the phase
+(defn- architect-prompt [feature]
+  (string
+    "ARCHITECT MODE — Plan this feature step by step.\n\n"
+    "1. First consider code layout — where should this code live?\n"
+    "   - Is this a new module, an extension, or a refactor?\n"
+    "   - What existing code will this interact with?\n\n"
+    "2. Produce a high-level plan as a mermaidjs diagram\n"
+    "   - Show the business logic flow\n"
+    "   - Show component interactions\n\n"
+    "3. Plan file structure (list files to create/modify)\n"
+    "   - New files needed\n"
+    "   - Existing files to modify\n\n"
+    "4. Create function stubs and type signatures\n"
+    "   - Interfaces first, implementations second\n\n"
+    "5. Write PLAN.md with the full plan\n\n"
+    "Feature: " feature))
+
+(defn- implementor-prompt []
+  (string
+    "IMPLEMENTOR MODE — Follow TDD strictly.\n\n"
+    "For each feature described in the plan:\n"
+    "1. Write a FAILING test first\n"
+    "2. Implement the minimal code to make it pass\n"
+    "3. Run tests, verify they pass (green)\n"
+    "4. Refactor if the code needs cleaning up\n"
+    "5. Move to the next feature\n\n"
+    "Do NOT write implementation without tests first.\n"
+    "Follow the plan from the architect phase."))
+
+(defn- review-prompt []
+  (string
+    "REVIEW MODE — Review all changes, find and fix bugs.\n\n"
+    "1. Review ALL changes for correctness\n"
+    "2. Check for bugs: edge cases, null/undefined handling,\n"
+    "   error handling, resource leaks\n"
+    "3. Run the full test suite and fix any failures\n"
+    "4. Verify TDD was followed (tests exist for all new code)\n"
+    "5. Check code style and consistency\n\n"
+    "After review, fix any issues found."))
+
+(defn workflow-on-prompt [ctx]
+  (let [prompt (ctx :prompt)]
+    (if (and (= phase :idle) (detect-feature-request prompt))
+      (do
+        (harness/log "workflow: feature request detected, entering architect phase")
+        (set phase :architect)
+        (harness/request-prompt (architect-prompt prompt))
+        "Starting architect phase...")
+      nil)))
+
+(defn workflow-on-response [ctx]
   (case phase
-    :architect (set phase :implementor)
-    :implementor (set phase :review)
-    :review (set phase :idle)
+    :architect
+    (do
+      (harness/log "workflow: architect complete, entering implementor phase")
+      (set phase :implementor)
+      (harness/request-prompt (implementor-prompt))
+      "Starting implementor phase...")
+
+    :implementor
+    (do
+      (harness/log "workflow: implementor complete, entering review phase")
+      (set phase :review)
+      (harness/request-prompt (review-prompt))
+      "Starting review phase...")
+
+    :review
+    (do
+      (harness/log "workflow: review complete, returning to idle")
+      (set phase :idle)
+      nil)
+
     nil))
+
+(defn workflow-on-tool-start [ctx]
+  (let [tool (ctx :tool)]
+    (harness/log (string "tool: " tool))
+    nil))
+
+(defn workflow-on-tool-end [ctx]
+  nil)
+
+(defn workflow-on-error [ctx]
+  (harness/log (string "error: " (ctx :error)))
+  nil)
+
+(defn workflow-on-complete [ctx]
+  nil)
