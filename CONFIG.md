@@ -25,7 +25,9 @@ Example:
   "compact_enabled": true,
   "default_prompt": "code",
   "default_permission_mode": "standard",
-  "show_tool_details": false,
+  "show_tool_details": true,
+  "show_edit_diff": true,
+  "tool_result_max_chars": 500,
   "custom_providers": {
     "local-vllm": {
       "provider_type": "openai",
@@ -75,7 +77,9 @@ Accepted top-level keys:
 | `yolo`                    | boolean | Select yolo mode, auto-approving all operations.                                                                                                                            |
 | `sandbox`                 | boolean | Run bash commands in the bubblewrap sandbox. Default: `false`.                                                                                                              |
 | `default_permission_mode` | string  | Permission mode when no mode boolean/CLI flag is set. Use `standard`, `restrictive`, `accept`, or `yolo`.                                                                   |
-| `show_tool_details`       | boolean | Show tool-result previews in the TUI. Default: `false`.                                                                                                                     |
+| `show_tool_details`       | boolean | Show tool-result output in the TUI. Default: `true`.                                                                                                                         |
+| `show_edit_diff`          | boolean | Show colorized diff output for `edit` tool results (`-` red, `+` green, `@@` cyan). Default: `true`.                                                                        |
+| `tool_result_max_chars`   | integer | Maximum characters to show before truncating tool output with `[N more chars]`. Default: `500`.                                                                              |
 | `default_prompt`          | string  | Prompt name to activate on startup. Default: `code`.                                                                                                                        |
 | `mcp_servers`             | object  | MCP server map when compiled with the `mcp` feature. When omitted, defaults to a single Exa Web Search server; see below.                                                   |
 | `acp_servers`             | object  | ACP server config map when compiled with the `acp` feature. See the ACP section below.                                                                                       |

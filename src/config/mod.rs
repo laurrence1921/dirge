@@ -40,6 +40,8 @@ pub struct Config {
     pub sandbox: Option<bool>,
     pub default_permission_mode: Option<String>,
     pub show_tool_details: Option<bool>,
+    pub show_edit_diff: Option<bool>,
+    pub tool_result_max_chars: Option<usize>,
     pub default_prompt: Option<String>,
     #[cfg(feature = "mcp")]
     pub mcp_servers: Option<HashMap<String, McpServerConfig>>,
@@ -71,6 +73,14 @@ impl Config {
 
     pub fn resolve_compact_enabled(&self) -> bool {
         self.compact_enabled.unwrap_or(true)
+    }
+
+    pub fn resolve_tool_result_max_chars(&self) -> usize {
+        self.tool_result_max_chars.unwrap_or(500)
+    }
+
+    pub fn resolve_show_edit_diff(&self) -> bool {
+        self.show_edit_diff.unwrap_or(true)
     }
 }
 

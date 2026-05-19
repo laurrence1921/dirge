@@ -106,6 +106,30 @@ dirge --provider glm       # defaults to glm-4
 
 ### Key bindings
 
+**Input editing**
+
+| Key | Action |
+|-----|--------|
+| Ctrl+A / Home | Start of line |
+| Ctrl+E / End | End of line |
+| Ctrl+B / Left | Char left |
+| Ctrl+F / Right | Char right |
+| Option+Left / Meta+B | Skip to previous word |
+| Option+Right / Meta+F | Skip to next word |
+| Ctrl+K | Kill to end of line |
+| Ctrl+U | Kill to start of line |
+| Ctrl+W | Kill word before cursor |
+| Meta+Backspace | Delete word before cursor |
+| Meta+D | Delete word after cursor |
+| Ctrl+Y | Yank (paste) last kill |
+| Meta+Y | Yank-pop (cycle kill ring after yank) |
+| Ctrl+N / Down | History next |
+| Ctrl+P / Up | History previous |
+| Tab | Insert 2 spaces |
+| `@<query>` | File picker (Tab/Enter select, Esc cancel) |
+
+**Agent control**
+
 | Key | Action |
 |-----|--------|
 | Ctrl+C / Ctrl+D / Esc | Interrupt running agent |
@@ -116,8 +140,15 @@ dirge --provider glm       # defaults to glm-4
 | Home/End | Jump to top/bottom |
 | `! cmd` | Run shell command (visible, injected into chat) |
 | `!! cmd` | Run shell command (invisible) |
-| `@<query>` | File picker (Tab/Enter select, Esc cancel) |
 | Mouse drag | Select text (copies to clipboard on release) |
+
+**Tool output display**
+
+| Feature | Detail |
+|---------|--------|
+| Tool results visible | Default on (`show_tool_details: true`), toggle in config |
+| Smart truncation | Outputs >500 chars truncated with `[N more chars]` indicator (`tool_result_max_chars` in config) |
+| Colorized edit diffs | `edit` tool results render with `-` (red), `+` (green), `@@` (cyan) coloring (`show_edit_diff: true` in config) |
 
 ## Prompts system
 

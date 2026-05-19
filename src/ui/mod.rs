@@ -134,6 +134,7 @@ pub async fn run_interactive(
     let mut show_reasoning = true;
     let mut was_reasoning = false;
     let mut todo_tools_enabled = false;
+    let mut last_tool_name: Option<String> = None;
     #[allow(unused_mut)]
     let mut loop_label: Option<String> = None;
     #[cfg(feature = "loop")]
@@ -922,6 +923,7 @@ pub async fn run_interactive(
                     }
                     AgentEvent::ToolCall { name, args } => {
                         was_reasoning = false;
+                        last_tool_name = Some(name.to_string());
                         if agent_line_started {
                             renderer.write_line("", Color::White)?;
                             agent_line_started = false;
@@ -954,7 +956,9 @@ pub async fn run_interactive(
                         }
                     }
                     AgentEvent::ToolResult { output } => {
-                        let show_details = cfg.show_tool_details.unwrap_or(false);
+                        let show_details = cfg.show_tool_details.unwrap_or(true);
+                        let max_chars = cfg.resolve_tool_result_max_chars();
+                        let show_diff = cfg.resolve_show_edit_diff();
 
                         #[cfg(feature = "plugin")]
                         if let Some(pm) = plugin_manager {
@@ -972,21 +976,51 @@ pub async fn run_interactive(
                                 )?;
                             }
                         }
+
                         if show_details {
-                            let sanitized = sanitize_output(&output);
-                            let char_count = sanitized.chars().count();
-                            let preview: String = sanitized.chars().take(120).collect();
-                            let preview_trimmed = if char_count > 120 {
-                                format!("{}...", preview)
+                            let is_edit =
+                                last_tool_name.as_deref() == Some("edit") && show_diff;
+
+                            if is_edit {
+                                // Colorized diff rendering
+                                let lines: Vec<&str> = output.lines().collect();
+                                let diff_start = lines.iter().position(|l| l.starts_with("--- "));
+                                if let Some(pre) = diff_start {
+                                    // Show non-diff prefix
+                                    for l in &lines[..pre] {
+                                        if !l.is_empty() {
+                                            renderer.write_line(
+                                                &format!("◈ {}", sanitize_output(l)),
+                                                Color::DarkGrey,
+                                            )?;
+                                        }
+                                    }
+                                    // Show colorized diff
+                                    for l in &lines[pre..] {
+                                        if l.starts_with("--- ") || l.starts_with("+++ ") {
+                                            renderer.write_line(l, Color::Cyan)?;
+                                        } else if l.starts_with("@@") {
+                                            renderer.write_line(l, Color::DarkCyan)?;
+                                        } else if l.starts_with('+') {
+                                            renderer.write_line(l, Color::Green)?;
+                                        } else if l.starts_with('-') {
+                                            renderer.write_line(l, Color::Red)?;
+                                        } else {
+                                            renderer.write_line(
+                                                &sanitize_output(l),
+                                                Color::DarkGrey,
+                                            )?;
+                                        }
+                                    }
+                                } else {
+                                    // No diff section found, show normally
+                                    render_tool_output(
+                                        &mut renderer, &output, max_chars,
+                                    )?;
+                                }
                             } else {
-                                preview
-                            };
-                            let summary = if char_count > 120 {
-                                format!("◈ result ({} chars): {}", char_count, preview_trimmed)
-                            } else {
-                                preview_trimmed
-                            };
-                            renderer.write_line(&summary, Color::DarkGrey)?;
+                                render_tool_output(&mut renderer, &output, max_chars)?;
+                            }
                         }
                     }
                     AgentEvent::Done { response, tokens, cost } => {
@@ -1348,6 +1382,27 @@ fn suggest_pattern(tool: &str, input: &str) -> String {
         }
         _ => "*".to_string(),
     }
+}
+
+fn render_tool_output(
+    renderer: &mut Renderer,
+    output: &str,
+    max_chars: usize,
+) -> anyhow::Result<()> {
+    let sanitized = sanitize_output(output);
+    let char_count = sanitized.chars().count();
+    if char_count <= max_chars {
+        renderer.write_line(&sanitized, Color::DarkGrey)?;
+    } else {
+        let preview: String = sanitized.chars().take(max_chars).collect();
+        let remaining = char_count - max_chars;
+        renderer.write_line(&preview, Color::DarkGrey)?;
+        renderer.write_line(
+            &format!("  [truncated: {} more chars]", remaining),
+            Color::DarkCyan,
+        )?;
+    }
+    Ok(())
 }
 
 fn update_search(renderer: &Renderer, query: &str, matches: &mut Vec<usize>, selected: &mut usize) {
