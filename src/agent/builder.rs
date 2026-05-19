@@ -84,7 +84,11 @@ pub async fn build_agent_inner<M: CompletionModel + 'static>(
             .and_then(|output| {
                 if output.status.success() {
                     let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if !branch.is_empty() { Some(branch) } else { None }
+                    if !branch.is_empty() {
+                        Some(branch)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
