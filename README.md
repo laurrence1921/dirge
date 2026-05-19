@@ -34,7 +34,11 @@ _dirge_ is one of the smallest and most performant coding agents on the market.
 
 ### Tool result caching
 
-Read-only tool calls (`read`, `grep`, `find_files`, `list_dir`) are cached per agent turn. Repeated calls with identical arguments within the same turn return cached results, avoiding redundant filesystem I/O. The cache clears automatically before each new prompt.
+Read-only tool calls (`read`, `grep`, `find_files`, `list_dir`) are cached per agent turn. Repeated calls with identical arguments within the same turn return cached results, avoiding redundant filesystem I/O. The cache clears automatically before each new prompt, and after `write`/`edit`/`bash` so a re-read sees fresh content.
+
+### Error recovery
+
+Transient API errors (network, rate limits) are automatically retried with exponential backoff (1s → 2s → 4s, max 3 retries) plus 0–25% jitter so concurrent agents don't retry in lockstep. Auth and unknown errors surface immediately. Context-length errors are not retried — surface a `/compress` hint instead. Stream events are buffered and only flushed on success, so retries don't duplicate tokens; if any tool calls were already dispatched (side effects applied), the partial buffer is flushed and the error is surfaced without retrying.
 
 ## Installation
 
