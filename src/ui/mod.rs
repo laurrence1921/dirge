@@ -2026,7 +2026,7 @@ pub async fn run_interactive(
                         // measurement) can hook in here without
                         // adding a new event variant.
                     }
-                    AgentEvent::ToolResult { id, output } => {
+                    AgentEvent::ToolResult { id, output, .. } => {
                         // Phase 3: pair the result with its call.
                         // Prefer id-match; fall back to the most-
                         // recent Interrupted (pending) entry for
@@ -2326,6 +2326,39 @@ pub async fn run_interactive(
                                         c_error(),
                                     )?;
                                 }
+                            }
+                            // Fire `prepare-next-run` so plugins can
+                            // signal session-level state changes for
+                            // the next run. Currently the only
+                            // supported slot is `harness-next-model`
+                            // — if set, surface a notification so
+                            // the user can apply via `/model X`.
+                            //
+                            // Auto-apply is deferred: the agent
+                            // rebuild path is non-trivial (touches
+                            // every cfg-feature combination of the
+                            // rig agent + the session model field +
+                            // context-window resolution) and the
+                            // existing `/model` slash already does it
+                            // correctly. Plugins propose, user
+                            // disposes.
+                            match mgr.dispatch("prepare-next-run", "@{}") {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    renderer.write_line(
+                                        &format!("[plugin] prepare-next-run error: {e}"),
+                                        c_error(),
+                                    )?;
+                                }
+                            }
+                            if let Some(next_model) = mgr.take_pending_next_model() {
+                                renderer.write_line(
+                                    &format!(
+                                        "[plugin] requested model swap to '{}' — apply with /model {}",
+                                        next_model, next_model,
+                                    ),
+                                    c_perm(),
+                                )?;
                             }
                             // Clear `harness-response` so the next hook
                             // doesn't see stale text from this turn.

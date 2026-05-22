@@ -1,5 +1,31 @@
 use compact_str::CompactString;
 
+/// Structured classification of tool output for richer downstream
+/// rendering. Most tools return plain text and use `Text`; tools
+/// that surface file references (`read`, `find_files`,
+/// `list_dir`) can opt into `File` so consumers (ACP, future UI
+/// features) can render file refs as resource links rather than
+/// blobs of text.
+///
+/// The classification is currently coarse — assigned by the
+/// runner based on tool NAME rather than via per-tool plumbing —
+/// since that's enough to drive opencode/ACP-style file-link
+/// surfaces without touching every tool's `type Output = String`
+/// contract. A future refactor could thread the variant through
+/// the rig `Tool` trait for finer control.
+#[derive(Debug, Clone, Default)]
+pub enum ToolContent {
+    /// Plain text output — the default for every tool that
+    /// returns prose, JSON, command output, diffs, etc.
+    #[default]
+    Text,
+    /// Tool surfaced one or more file paths (read returned the
+    /// content of a specific file; find_files returned a listing).
+    /// Consumers can render as a clickable resource link instead
+    /// of a text blob.
+    File,
+}
+
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Token(CompactString),
@@ -36,6 +62,11 @@ pub enum AgentEvent {
     /// keeps the per-event allocation cheap; the runner emits
     /// many of these per turn.
     ToolStarted {
+        // Only consumed by feature-gated paths (ACP) at present;
+        // UI arm uses `{ .. }`. The field is part of the variant's
+        // documented contract — kept regardless of which features
+        // are compiled.
+        #[allow(dead_code)]
         id: CompactString,
     },
     ToolResult {
@@ -45,6 +76,19 @@ pub enum AgentEvent {
         /// recent unanswered ToolCall in the same turn).
         id: CompactString,
         output: CompactString,
+        /// Structured classification of `output`. Additive — the
+        /// existing `output: CompactString` remains the
+        /// authoritative payload for the LLM and the default UI
+        /// rendering path. Consumers that want richer rendering
+        /// (ACP resource links, future UI file-card components)
+        /// dispatch on `kind`.
+        ///
+        /// Defaults to `Text`; the runner classifies as `File`
+        /// when the producing tool name is known to surface a
+        /// file reference (`read`, `find_files`, `list_dir`).
+        /// Coarse on purpose — no per-tool plumbing required.
+        #[allow(dead_code)]
+        kind: ToolContent,
     },
     Error(CompactString),
     /// The streaming run failed with a context-length error. Audit

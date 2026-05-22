@@ -1724,6 +1724,13 @@ pub const HOOK_NAMES: &[&str] = &[
     "on-tool-end",
     "on-error",
     "on-complete",
+    // Fires AFTER a run completes (Done event) and BEFORE the next
+    // user prompt is processed. Plugins read this to mutate
+    // session-level state that should affect the next run — most
+    // notably swapping the model via `harness-next-model`. Scoped
+    // to between-run boundaries because rig's multi-turn stream
+    // owns state that doesn't survive a mid-stream model swap.
+    "prepare-next-run",
 ];
 
 /// One loaded plugin's stem (used for hook-name namespacing) and the
@@ -1990,6 +1997,15 @@ impl PluginManager {
     /// of the real one.
     pub fn take_pending_replace_result(&mut self) -> Option<String> {
         self.take_string_slot("harness-replace-result")
+    }
+
+    /// Read and clear the `harness-next-model` slot. Set by
+    /// plugins from `prepare-next-run` to swap the active model
+    /// before the next user prompt runs. Mid-stream model swap
+    /// isn't supported — the host reads this only AFTER Done and
+    /// applies it via the same path that `/model <name>` uses.
+    pub fn take_pending_next_model(&mut self) -> Option<String> {
+        self.take_string_slot("harness-next-model")
     }
 
     /// Read and clear the `harness-prompt-replace` slot. Set by plugins

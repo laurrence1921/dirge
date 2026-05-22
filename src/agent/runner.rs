@@ -260,6 +260,13 @@ where
     // payload self-contained).
     let mut partial = String::new();
     let mut turns = TurnTracker::new();
+    // id → tool name lookup so the `ToolResult` emit site can
+    // classify the output (`ToolContent::Text` vs `File`) by the
+    // call's tool name. Populated at each `ToolCall` arm, drained
+    // at the matching `ToolResult`. Per-stream lifetime — tool
+    // calls don't cross stream boundaries.
+    let mut tool_name_by_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     // Helper: forward any pending turn-boundary events. Called before
     // assistant-content events (to emit TurnStart / TurnEnd+TurnStart)
@@ -322,6 +329,9 @@ where
                 outcome.had_tool_calls = true;
                 let id = CompactString::from(tool_call.id);
                 let name = CompactString::from(tool_call.function.name);
+                // Stash the name for the matching ToolResult to
+                // classify by tool kind.
+                tool_name_by_id.insert(id.to_string(), name.to_string());
                 let _ = event_tx
                     .send(AgentEvent::ToolCall {
                         id: id.clone(),
@@ -331,12 +341,8 @@ where
                     .await;
                 // ToolStarted fires immediately after ToolCall —
                 // semantic boundary between "LLM emitted the call"
-                // and "rig is about to dispatch". The rig
-                // multi-turn stream dispatches the tool right
-                // after this match arm returns, so this is the
-                // closest pre-execution tick available without
-                // patching rig itself. ACP consumers use it to
-                // surface `ToolCallStatus::InProgress`.
+                // and "rig is about to dispatch". ACP consumers
+                // use it to surface `ToolCallStatus::InProgress`.
                 let _ = event_tx.send(AgentEvent::ToolStarted { id }).await;
                 let _ = name; // emitted via the preceding ToolCall
             }
@@ -376,10 +382,23 @@ where
                         original_len, cut,
                     ));
                 }
+                let result_id = CompactString::from(tool_result.id);
+                // Classify the output by the producing tool's
+                // name. Coarse but enough to drive resource-link
+                // rendering for `read` / `find_files` / `list_dir`.
+                // Anything else is `Text`. Drain the entry — call/
+                // result pairing is 1:1 within a turn.
+                let kind = match tool_name_by_id.remove(result_id.as_str()) {
+                    Some(name) if matches!(name.as_str(), "read" | "find_files" | "list_dir") => {
+                        crate::event::ToolContent::File
+                    }
+                    _ => crate::event::ToolContent::Text,
+                };
                 let _ = event_tx
                     .send(AgentEvent::ToolResult {
-                        id: CompactString::from(tool_result.id),
+                        id: result_id,
                         output: CompactString::from(output),
+                        kind,
                     })
                     .await;
                 turns.observe_tool_result();

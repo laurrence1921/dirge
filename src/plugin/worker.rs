@@ -97,6 +97,16 @@ const HARNESS_INIT: &str = r#"
 (defn harness/replace-result [output]
   (when (string? output) (set harness-replace-result output)))
 
+# Run-boundary slots. Plugins call `harness/set-next-model` from
+# inside `prepare-next-run` to swap the active model before the
+# next user prompt runs. Mid-stream model swap isn't supported
+# (rig's multi-turn stream state doesn't survive it); the slot is
+# read by the host after Done and applied via the same path that
+# `/model <name>` uses.
+(var harness-next-model nil)
+(defn harness/set-next-model [model-name]
+  (when (string? model-name) (set harness-next-model model-name)))
+
 # Slash-command registry. Plugins register at load time;
 # the host reads the list once after all plugins load and
 # dispatches matching /cmd input back to the named handler.

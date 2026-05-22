@@ -252,10 +252,17 @@ async fn run_prompt(
                     let _ = cx.send_notification(notif);
                 }
             }
-            AgentEvent::ToolResult { id, output } => {
+            AgentEvent::ToolResult { id, output, kind } => {
                 let id = correlator
                     .resolve(id.as_str())
                     .unwrap_or_else(|| ToolCallId::new(String::new()));
+                // `kind == File` could become a `ResourceLink`
+                // ContentBlock in a follow-up; for now both
+                // variants surface as TextContent so the LLM /
+                // ACP client behavior is unchanged. The
+                // classification just flows through the event for
+                // future consumers.
+                let _ = kind;
                 let fields = ToolCallUpdateFields::new()
                     .status(ToolCallStatus::Completed)
                     .content(vec![ToolCallContent::from(ContentBlock::Text(
