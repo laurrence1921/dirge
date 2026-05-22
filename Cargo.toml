@@ -13,6 +13,10 @@ keywords = ["ai", "cli", "dev"]
 [features]
 default = ['loop', 'git-worktree', 'mcp', 'lsp']
 loop = []
+# Pi-style agent loop (port of pi's runLoop). Off by default while
+# phases land; unreachable from production code paths until phase 4
+# flips the default. See PLAN.md for the phasing.
+agent-loop = []
 git-worktree = []
 mcp = [
     "dep:rmcp",
