@@ -478,6 +478,12 @@ async fn main() -> anyhow::Result<()> {
                             provider_type: ptype,
                             base_url,
                             api_key_env,
+                            // Plugin-registered providers don't expose
+                            // a chunk-timeout knob via the
+                            // `harness/register-provider` API; they
+                            // inherit the top-level default
+                            // (`stream_chunk_timeout_secs` or 300s).
+                            stream_chunk_timeout_secs: None,
                         },
                     )
                 })
