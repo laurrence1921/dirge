@@ -481,6 +481,43 @@ impl AnyAgent {
             AnyAgentInner::Custom(a) => runner::spawn_agent(a, prompt, history, self.cache, t),
         }
     }
+
+    /// Phase 4.5h-2: produce a `StreamFn` from this agent's
+    /// underlying `CompletionModel`, threading the supplied tool
+    /// definitions. Used by the new loop path (`spawn_loop_runner`)
+    /// to drive a real LLM through the ported agent_loop.
+    ///
+    /// Dispatch is a match over `AnyAgentInner`; each variant
+    /// extracts its provider-specific `Arc<M>` and threads it
+    /// through `rig_stream_fn_from_model::<M>`. The Arc deref +
+    /// clone is cheap (refcount bump on the inner Arc, then a
+    /// CompletionModel clone — rig's models are themselves
+    /// Arc-internal in most provider impls).
+    ///
+    /// Tool definitions are passed in (not extracted from
+    /// `agent.tools`) because the new path uses the LoopTool
+    /// registry as the source of truth — phase 4.5h-4 builds
+    /// that registry alongside the rig Agent. Callers convert
+    /// each `Arc<dyn LoopTool>` to a rig `ToolDefinition` via
+    /// `agent_loop::loop_tool_to_rig_definition` before calling
+    /// this method.
+    #[cfg(feature = "agent-loop")]
+    pub fn build_stream_fn(
+        &self,
+        tools: Vec<rig::completion::ToolDefinition>,
+    ) -> crate::agent::agent_loop::StreamFn {
+        use crate::agent::agent_loop::rig_stream_fn_from_model;
+        match &self.inner {
+            AnyAgentInner::OpenRouter(a) => rig_stream_fn_from_model((*a.model).clone(), tools),
+            AnyAgentInner::OpenAI(a) => rig_stream_fn_from_model((*a.model).clone(), tools),
+            AnyAgentInner::Anthropic(a) => rig_stream_fn_from_model((*a.model).clone(), tools),
+            AnyAgentInner::Gemini(a) => rig_stream_fn_from_model((*a.model).clone(), tools),
+            AnyAgentInner::DeepSeek(a) => rig_stream_fn_from_model((*a.model).clone(), tools),
+            AnyAgentInner::Glm(a) => rig_stream_fn_from_model((*a.model).clone(), tools),
+            AnyAgentInner::Ollama(a) => rig_stream_fn_from_model((*a.model).clone(), tools),
+            AnyAgentInner::Custom(a) => rig_stream_fn_from_model((*a.model).clone(), tools),
+        }
+    }
 }
 
 pub fn create_client(
@@ -696,5 +733,99 @@ mod tests {
                 "env_var={env_var}",
             );
         }
+    }
+
+    // ============================================================
+    // Phase 4.5h-2: AnyAgent::build_stream_fn dispatch tests
+    // ============================================================
+
+    /// Build a real `AnyAgent` from an openai-shaped client +
+    /// model. The Client::new doesn't connect (no network until
+    /// the first request), so this works in unit tests.
+    ///
+    /// Use `completions_api()` to get the chat-completion model
+    /// (the variant `AnyAgentInner::OpenAI` holds); the default
+    /// `completion_model` on a fresh `Client` returns the
+    /// responses-api model, which is a different type.
+    #[cfg(feature = "agent-loop")]
+    fn build_openai_any_agent() -> AnyAgent {
+        use rig::providers::openai;
+        let client = openai::Client::new("test-key")
+            .expect("openai Client::new should work")
+            .completions_api();
+        let model = client.completion_model("gpt-4o");
+        let agent = rig::agent::AgentBuilder::new(model).build();
+        AnyAgent::new(
+            AnyAgentInner::OpenAI(agent),
+            ToolCache::new(),
+            std::time::Duration::from_secs(300),
+        )
+    }
+
+    /// `build_stream_fn` returns a `Send + Sync + 'static`
+    /// `StreamFn` for the OpenAI variant. Compile-time check —
+    /// if the bounds don't match the type would fail to
+    /// construct.
+    #[cfg(feature = "agent-loop")]
+    #[test]
+    fn build_stream_fn_returns_send_sync_static() {
+        fn assert_send_sync_static<T: Send + Sync + 'static>(_: &T) {}
+        let agent = build_openai_any_agent();
+        let stream_fn = agent.build_stream_fn(vec![]);
+        assert_send_sync_static(&stream_fn);
+    }
+
+    /// `build_stream_fn` is callable as a `Fn` (multi-call) —
+    /// the loop invokes it once per turn. Verify by calling
+    /// twice and checking both invocations produce streams.
+    #[cfg(feature = "agent-loop")]
+    #[tokio::test]
+    async fn build_stream_fn_is_multi_callable() {
+        use crate::agent::agent_loop::LlmContext;
+        use crate::agent::agent_loop::tool::AbortSignal;
+        use futures::stream::StreamExt;
+
+        let agent = build_openai_any_agent();
+        let stream_fn = agent.build_stream_fn(vec![]);
+
+        // Call once with an empty context — should emit an
+        // Error event (no prompt) without panicking.
+        let ctx = LlmContext {
+            system_prompt: String::new(),
+            messages: vec![],
+        };
+        let mut s = stream_fn(ctx, None, AbortSignal::new());
+        let first = s.next().await;
+        assert!(first.is_some(), "first call should produce events");
+
+        // Call again — same closure, same Arc, fresh stream.
+        let ctx2 = LlmContext {
+            system_prompt: String::new(),
+            messages: vec![],
+        };
+        let mut s2 = stream_fn(ctx2, None, AbortSignal::new());
+        let second = s2.next().await;
+        assert!(second.is_some(), "second call should also produce events");
+    }
+
+    /// All 8 `AnyAgentInner` variants compile through
+    /// `build_stream_fn` — the match arms cover the full enum,
+    /// and the bounds on `rig_stream_fn_from_model<M>` are
+    /// satisfied by each provider's `CompletionModel`.
+    ///
+    /// This test exists primarily as a compile-time
+    /// canary: if a future provider variant gets added to
+    /// `AnyAgentInner` without a matching arm in
+    /// `build_stream_fn`, the build breaks. Runtime
+    /// dispatch is exercised by the OpenAI-backed tests
+    /// above.
+    #[cfg(feature = "agent-loop")]
+    #[test]
+    fn build_stream_fn_covers_all_variants_compile_time() {
+        // Just constructs one variant and calls
+        // build_stream_fn; the rest are validated by the
+        // match-arm exhaustiveness check at compile time.
+        let agent = build_openai_any_agent();
+        let _ = agent.build_stream_fn(vec![]);
     }
 }
