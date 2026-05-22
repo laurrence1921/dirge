@@ -537,6 +537,24 @@ impl AnyAgent {
     ///
     /// Returns immediately with `AgentRunner`; the loop runs on
     /// a spawned tokio task.
+    /// Return the provider name as a static string (matches the
+    /// CLI / config naming: "openai", "anthropic", ..., "glm",
+    /// "ollama", "openrouter", "custom"). Used to populate
+    /// `LoopConfig.provider_name` so the `getApiKey` hook
+    /// receives the canonical name (code review #2).
+    pub fn provider_name(&self) -> &'static str {
+        match &self.inner {
+            AnyAgentInner::OpenRouter(_) => "openrouter",
+            AnyAgentInner::OpenAI(_) => "openai",
+            AnyAgentInner::Anthropic(_) => "anthropic",
+            AnyAgentInner::Gemini(_) => "gemini",
+            AnyAgentInner::DeepSeek(_) => "deepseek",
+            AnyAgentInner::Glm(_) => "glm",
+            AnyAgentInner::Ollama(_) => "ollama",
+            AnyAgentInner::Custom(_) => "custom",
+        }
+    }
+
     pub fn spawn_runner(self, prompt: String, history: Vec<Message>) -> AgentRunner {
         use crate::agent::agent_loop::{
             LoopSpawnConfig, loop_tool_to_rig_definition, retrying_stream_fn,
@@ -545,6 +563,8 @@ impl AnyAgent {
         use crate::agent::recovery::RecoveryPolicy;
 
         self.cache.clear();
+
+        let provider_name = self.provider_name().to_string();
 
         // Convert tool registry → rig ToolDefinitions for the
         // request builder, and keep the registry itself for the
@@ -581,6 +601,7 @@ impl AnyAgent {
         cfg.system_prompt = system_prompt;
         cfg.history = loop_history;
         cfg.tools = self.loop_tools;
+        cfg.provider_name = Some(provider_name);
         #[cfg(feature = "plugin")]
         {
             cfg.plugin_mgr = crate::plugin::hook::global();

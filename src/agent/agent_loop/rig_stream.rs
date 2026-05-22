@@ -60,11 +60,12 @@ use super::message::{AssistantMessage, ContentBlock, DeltaPhase, StopReason, Str
 pub fn wrap_rig_stream<R>(
     rig_stream: StreamingCompletionResponse<R>,
     chunk_timeout: Option<std::time::Duration>,
+    signal: Option<crate::agent::agent_loop::tool::AbortSignal>,
 ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send>>
 where
     R: Clone + Unpin + Send + GetTokenUsage + 'static,
 {
-    wrap_streamed_assistant(Box::pin(rig_stream), chunk_timeout)
+    wrap_streamed_assistant(Box::pin(rig_stream), chunk_timeout, signal)
 }
 
 /// Lower-level variant: wrap any `Stream<Result<StreamedAssistantContent<R>,
@@ -87,6 +88,7 @@ pub fn wrap_streamed_assistant<R>(
         Box<dyn Stream<Item = Result<StreamedAssistantContent<R>, CompletionError>> + Send>,
     >,
     chunk_timeout: Option<std::time::Duration>,
+    signal: Option<crate::agent::agent_loop::tool::AbortSignal>,
 ) -> Pin<Box<dyn Stream<Item = StreamEvent> + Send>>
 where
     R: Clone + Unpin + Send + 'static,
@@ -107,6 +109,23 @@ where
             std::collections::HashMap::new();
 
         loop {
+            // Code review R3: honor AbortSignal between chunks.
+            // The loop / tools already check signal at their
+            // boundaries; here we add a per-chunk check so a
+            // mid-stream cancel actually stops the rig request
+            // rather than waiting for the next turn boundary.
+            // Pre-poll check covers the case where signal was
+            // cancelled BEFORE the first chunk arrived; the
+            // post-await check catches cancellation that
+            // happened DURING the chunk wait.
+            if let Some(sig) = signal.as_ref()
+                && sig.is_cancelled()
+            {
+                yield StreamEvent::Error {
+                    error: "stream aborted by cancellation signal".to_string(),
+                };
+                return;
+            }
             // Apply per-chunk timeout if configured. The yield
             // pattern below mirrors `while let Some(...)` exactly
             // for the non-timeout path.
@@ -441,7 +460,7 @@ mod tests {
                 text: " world".to_string(),
             })),
         ]);
-        let events = drain(wrap_streamed_assistant(raw, None)).await;
+        let events = drain(wrap_streamed_assistant(raw, None, None)).await;
         let labels: Vec<_> = events.iter().map(label).collect();
         assert_eq!(
             labels,
@@ -481,7 +500,7 @@ mod tests {
             },
             internal_call_id: "internal_1".to_string(),
         })]);
-        let events = drain(wrap_streamed_assistant(raw, None)).await;
+        let events = drain(wrap_streamed_assistant(raw, None, None)).await;
         let labels: Vec<_> = events.iter().map(label).collect();
         assert_eq!(
             labels,
@@ -532,7 +551,7 @@ mod tests {
                 content: ToolCallDeltaContent::Delta("th\":\"/tmp/x\"}".to_string()),
             }),
         ]);
-        let events = drain(wrap_streamed_assistant(raw, None)).await;
+        let events = drain(wrap_streamed_assistant(raw, None, None)).await;
         let labels: Vec<_> = events.iter().map(label).collect();
         assert_eq!(
             labels,
@@ -605,7 +624,7 @@ mod tests {
                 internal_call_id: "internal_x".to_string(),
             }),
         ]);
-        let events = drain(wrap_streamed_assistant(raw, None)).await;
+        let events = drain(wrap_streamed_assistant(raw, None, None)).await;
         let final_msg = events
             .iter()
             .rev()
@@ -696,7 +715,7 @@ mod tests {
                 reasoning: " about this".to_string(),
             }),
         ]);
-        let events = drain(wrap_streamed_assistant(raw, None)).await;
+        let events = drain(wrap_streamed_assistant(raw, None, None)).await;
         let labels: Vec<_> = events.iter().map(label).collect();
         assert_eq!(
             labels,
@@ -727,7 +746,7 @@ mod tests {
         let raw = raw_stream(vec![Ok(StreamedAssistantContent::Reasoning(
             Reasoning::new("All thinking"),
         ))]);
-        let events = drain(wrap_streamed_assistant(raw, None)).await;
+        let events = drain(wrap_streamed_assistant(raw, None, None)).await;
         assert!(matches!(events[0], StreamEvent::Start { .. }));
         assert!(matches!(
             events[1],
@@ -751,7 +770,7 @@ mod tests {
                 text: " more text".to_string(),
             })),
         ]);
-        let events = drain(wrap_streamed_assistant(raw, None)).await;
+        let events = drain(wrap_streamed_assistant(raw, None, None)).await;
         assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
         let dones = events
             .iter()
@@ -776,7 +795,7 @@ mod tests {
                 text: "done".to_string(),
             })),
         ]);
-        let events = drain(wrap_streamed_assistant(raw, None)).await;
+        let events = drain(wrap_streamed_assistant(raw, None, None)).await;
         let final_msg = events
             .iter()
             .rev()
@@ -844,7 +863,7 @@ mod tests {
         let raw = raw_stream(vec![Ok(StreamedAssistantContent::Text(Text {
             text: "ok".to_string(),
         }))]);
-        let events = drain(wrap_streamed_assistant(raw, None)).await;
+        let events = drain(wrap_streamed_assistant(raw, None, None)).await;
         // Normal completion — no Error.
         assert!(events.iter().any(|e| matches!(e, StreamEvent::Done { .. })));
         assert!(
@@ -863,7 +882,12 @@ mod tests {
         tokio::time::pause();
         let raw = stalling_stream();
         let drain_task = tokio::spawn(async move {
-            drain(wrap_streamed_assistant(raw, Some(Duration::from_secs(5)))).await
+            drain(wrap_streamed_assistant(
+                raw,
+                Some(Duration::from_secs(5)),
+                None,
+            ))
+            .await
         });
         tokio::time::advance(Duration::from_secs(10)).await;
         let events = drain_task.await.unwrap();
@@ -887,6 +911,66 @@ mod tests {
         );
     }
 
+    /// R3 regression: AbortSignal cancellation between chunks
+    /// produces an Error event and stops the stream. Earlier
+    /// versions silently ignored opts.signal at the rig
+    /// adapter level — mid-stream cancel had no effect until
+    /// the next turn boundary.
+    #[tokio::test]
+    async fn signal_cancels_stream_mid_flight() {
+        use crate::agent::agent_loop::tool::AbortSignal;
+        let raw = raw_stream(vec![
+            Ok(StreamedAssistantContent::Text(Text {
+                text: "first".to_string(),
+            })),
+            Ok(StreamedAssistantContent::Text(Text {
+                text: " second".to_string(),
+            })),
+        ]);
+        let signal = AbortSignal::new();
+        signal.cancel();
+        let events = drain(wrap_streamed_assistant(raw, None, Some(signal))).await;
+        // Pre-loop signal check fires before the first chunk
+        // poll. Expect: Start, Error (no Text deltas).
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|e| match e {
+                StreamEvent::Start { .. } => "start",
+                StreamEvent::Delta { .. } => "delta",
+                StreamEvent::Done { .. } => "done",
+                StreamEvent::Error { .. } => "error",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["start", "error"]);
+        match events.last().unwrap() {
+            StreamEvent::Error { error } => {
+                assert!(
+                    error.contains("aborted"),
+                    "expected 'aborted' in error message; got: {error}"
+                );
+            }
+            _ => panic!("expected Error last"),
+        }
+    }
+
+    /// R3: signal=None means the cancellation check is skipped.
+    /// Pre-R3 behavior preserved when callers don't supply a
+    /// signal (e.g. ad-hoc tests).
+    #[tokio::test]
+    async fn signal_none_does_not_affect_stream() {
+        let raw = raw_stream(vec![Ok(StreamedAssistantContent::Text(Text {
+            text: "ok".to_string(),
+        }))]);
+        let events = drain(wrap_streamed_assistant(raw, None, None)).await;
+        // Normal completion — no Error.
+        assert!(events.iter().any(|e| matches!(e, StreamEvent::Done { .. })));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::Error { .. }))
+        );
+    }
+
     /// Fast stream + tight timeout still completes normally —
     /// timeout only fires when a chunk takes longer than the
     /// deadline, not when the whole stream does. (Per-chunk
@@ -906,6 +990,7 @@ mod tests {
         let events = drain(wrap_streamed_assistant(
             raw,
             Some(Duration::from_millis(10)),
+            None,
         ))
         .await;
         assert!(events.iter().any(|e| matches!(e, StreamEvent::Done { .. })));

@@ -142,12 +142,14 @@ pub async fn stream_assistant_response(
     // 2. convertToLlm (required, AgentMessage[] → Message[])
     let llm_messages = (config.convert_to_llm)(&messages);
 
-    // 3. getApiKey (optional dynamic resolution)
+    // 3. getApiKey (optional dynamic resolution) — receives the
+    // provider name so a single hook implementation can dispatch
+    // across providers. Pi contract: `getApiKey(provider:
+    // string)`. Code review #2 — earlier code passed `""`
+    // unconditionally, which broke provider-aware key resolvers.
     let resolved_api_key: Option<String> = if let Some(get_key) = &config.get_api_key {
-        // Phase 1 placeholder: model identifier is empty. Phase 4
-        // will pass the real provider name from `config.model.
-        // provider`.
-        match get_key("").await {
+        let provider = config.provider_name.as_deref().unwrap_or("");
+        match get_key(provider).await {
             Some(k) => Some(k),
             None => config.api_key.clone(),
         }
@@ -372,6 +374,7 @@ mod tests {
             headers: std::collections::HashMap::new(),
             metadata: std::collections::HashMap::new(),
             request_timeout: None,
+            provider_name: None,
         }
     }
 
@@ -488,6 +491,47 @@ mod tests {
         assert_eq!(
             ctx.messages[1].get("role").and_then(|r| r.as_str()),
             Some("assistant")
+        );
+    }
+
+    /// Code review #2: `get_api_key` hook receives the
+    /// provider name, not an empty string. Pi contract:
+    /// `getApiKey(provider: string) => key`. Without the
+    /// provider name, hooks can't dispatch across multiple
+    /// providers in one process.
+    #[tokio::test]
+    async fn test_get_api_key_receives_provider_name() {
+        use std::sync::Mutex;
+        let observed: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let observed_clone = observed.clone();
+        let mut config = build_config(identity_converter());
+        config.provider_name = Some("anthropic".to_string());
+        config.get_api_key = Some(Arc::new(move |provider| {
+            let observed = observed_clone.clone();
+            let p = provider.to_string();
+            Box::pin(async move {
+                *observed.lock().unwrap() = Some(p);
+                Some("hook-resolved-key".to_string())
+            })
+        }));
+        let mut ctx = Context {
+            system_prompt: String::new(),
+            messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
+            tools: Vec::new(),
+        };
+        let (tx, _rx) = mpsc::channel::<LoopEvent>(8);
+        let _ = stream_assistant_response(
+            &mut ctx,
+            &config,
+            AbortSignal::new(),
+            &tx,
+            &canned_done_stream("ok"),
+        )
+        .await;
+        assert_eq!(
+            observed.lock().unwrap().as_deref(),
+            Some("anthropic"),
+            "get_api_key hook should have received 'anthropic'"
         );
     }
 
@@ -621,6 +665,7 @@ mod tests {
             headers: std::collections::HashMap::new(),
             metadata: std::collections::HashMap::new(),
             request_timeout: None,
+            provider_name: None,
         };
         let signal = AbortSignal::new();
         let (tx, mut rx) = mpsc::channel::<LoopEvent>(32);

@@ -873,6 +873,7 @@ mod tests {
             headers: std::collections::HashMap::new(),
             metadata: std::collections::HashMap::new(),
             request_timeout: None,
+            provider_name: None,
         }
     }
 

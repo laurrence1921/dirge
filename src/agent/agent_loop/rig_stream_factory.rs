@@ -191,7 +191,7 @@ where
         // 4. Call model.stream; wrap result or emit error.
         match model.stream(request).await {
             Ok(response) => {
-                let mut wrapped = wrap_rig_stream(response, chunk_timeout);
+                let mut wrapped = wrap_rig_stream(response, chunk_timeout, Some(opts.signal.clone()));
                 use futures::stream::StreamExt;
                 while let Some(evt) = wrapped.next().await {
                     yield evt;

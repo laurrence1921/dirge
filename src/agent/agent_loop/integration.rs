@@ -321,6 +321,12 @@ pub struct LoopSpawnConfig {
     /// Channel capacity for the AgentEvent output. 256 matches
     /// the existing `runner::spawn_agent` choice.
     pub event_channel_capacity: usize,
+
+    /// Provider name forwarded to `LoopConfig.provider_name` so
+    /// the `getApiKey` hook receives the canonical provider
+    /// identifier. Code review #2 — was missing; hook used to
+    /// receive empty string.
+    pub provider_name: Option<String>,
 }
 
 impl LoopSpawnConfig {
@@ -335,6 +341,7 @@ impl LoopSpawnConfig {
             history: Vec::new(),
             initial_prompt: prompt.into(),
             tools: Vec::new(),
+            provider_name: None,
             #[cfg(feature = "plugin")]
             plugin_mgr: None,
             steering_queue: None,
@@ -379,6 +386,7 @@ pub fn spawn_loop_runner(cfg: LoopSpawnConfig) -> LoopRunner {
         headers: std::collections::HashMap::new(),
         metadata: std::collections::HashMap::new(),
         request_timeout: None,
+        provider_name: cfg.provider_name.clone(),
     };
 
     #[cfg(feature = "plugin")]

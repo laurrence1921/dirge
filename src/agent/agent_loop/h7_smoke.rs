@@ -176,6 +176,7 @@ async fn h7_scenario_1_simple_text() {
         steering_queue: None,
         tool_execution: crate::agent::agent_loop::types::ToolExecutionMode::Parallel,
         event_channel_capacity: 256,
+        provider_name: None,
     };
     let runner = spawn_loop_runner(cfg).into_agent_runner();
     let (events, response) = drain_to_done(runner).await;
@@ -239,6 +240,7 @@ async fn h7_scenario_2_turn_boundaries() {
         steering_queue: None,
         tool_execution: crate::agent::agent_loop::types::ToolExecutionMode::Parallel,
         event_channel_capacity: 256,
+        provider_name: None,
     };
     let runner = spawn_loop_runner(cfg).into_agent_runner();
     let (events, response) = drain_to_done(runner).await;
@@ -336,6 +338,7 @@ async fn h7_scenario_5_auth_error_surfaces() {
         steering_queue: None,
         tool_execution: crate::agent::agent_loop::types::ToolExecutionMode::Parallel,
         event_channel_capacity: 256,
+        provider_name: None,
     };
     let runner = spawn_loop_runner(cfg).into_agent_runner();
     let (events, _) = drain_to_done(runner).await;
@@ -485,6 +488,7 @@ async fn h7_scenario_3_tool_dispatch() {
         steering_queue: None,
         tool_execution: crate::agent::agent_loop::types::ToolExecutionMode::Sequential,
         event_channel_capacity: 256,
+        provider_name: None,
     };
     let runner = spawn_loop_runner(cfg).into_agent_runner();
     let (events, response) = drain_to_done(runner).await;
@@ -587,6 +591,7 @@ async fn h7_glm_scenario_1_simple_text() {
         steering_queue: None,
         tool_execution: crate::agent::agent_loop::types::ToolExecutionMode::Parallel,
         event_channel_capacity: 256,
+        provider_name: None,
     };
     let runner = spawn_loop_runner(cfg).into_agent_runner();
     let (events, response) = drain_to_done(runner).await;
@@ -707,6 +712,7 @@ async fn h7_glm_scenario_3_tool_dispatch() {
         steering_queue: None,
         tool_execution: crate::agent::agent_loop::types::ToolExecutionMode::Sequential,
         event_channel_capacity: 256,
+        provider_name: None,
     };
     let runner = spawn_loop_runner(cfg).into_agent_runner();
     let (events, response) = drain_to_done(runner).await;

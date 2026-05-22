@@ -259,6 +259,14 @@ pub struct LoopConfig {
     /// override is not yet wired — field present so future
     /// commits can honor it without another LoopConfig change.
     pub request_timeout: Option<std::time::Duration>,
+
+    /// Provider name passed to the `getApiKey` hook so a single
+    /// hook implementation can resolve keys for multiple
+    /// providers (matches pi `getApiKey(provider)` contract).
+    /// Set at run construction (`spawn_runner` from
+    /// `AnyAgentInner` variant name). Code review #2 — earlier
+    /// code passed `""` here, breaking any provider-aware hook.
+    pub provider_name: Option<String>,
 }
 
 /// `convertToLlm` signature. Synchronous in pi (returns
@@ -332,6 +340,7 @@ impl std::fmt::Debug for LoopConfig {
             .field("headers", &self.headers)
             .field("metadata", &self.metadata)
             .field("request_timeout", &self.request_timeout)
+            .field("provider_name", &self.provider_name)
             .finish()
     }
 }
@@ -355,6 +364,7 @@ impl Clone for LoopConfig {
             headers: self.headers.clone(),
             metadata: self.metadata.clone(),
             request_timeout: self.request_timeout,
+            provider_name: self.provider_name.clone(),
         }
     }
 }

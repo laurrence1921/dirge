@@ -232,36 +232,35 @@ fn flatten_text(content: &[serde_json::Value]) -> String {
 // ============================================================
 
 /// Build a `PrepareNextTurnFn` that reads the
-/// `harness-next-thinking-level` slot (and `harness-next-model`)
-/// from the plugin manager. Plugins set these slots via
-/// `harness/set-next-thinking-level` / `harness/set-next-model`
+/// `harness-next-thinking-level` slot from the plugin manager.
+/// Plugins set the slot via `harness/set-next-thinking-level`
 /// inside `on-tool-end` (or any hook firing between turns).
 ///
-/// Returns `Some(TurnUpdate)` with the requested fields when any
-/// slot was set; `None` otherwise. Context is never mutated by
-/// this factory — separate hooks compose if a plugin wants to
-/// rewrite the transcript.
+/// **Does NOT drain `harness-next-model`** (code review bug R1).
+/// That slot has pre-existing dirge semantics: read by the UI
+/// at end-of-run (`ui/mod.rs:2359`) to spawn a fresh agent
+/// against the new model. Mid-run model swap isn't supported
+/// today (rig's stream can't pivot mid-flight, and even
+/// `run_loop` only logs a warning when `TurnUpdate.model` is
+/// set — see code review #3). Draining the slot here would
+/// steal it from the UI consumer and break the existing
+/// `/model` swap flow.
 ///
-/// Locking pattern matches before/after_hook_from_plugin_manager:
-/// acquire-read-release synchronously per call.
+/// Returns `Some(TurnUpdate)` with the requested thinking
+/// level when the slot was set; `None` otherwise.
 pub fn prepare_next_turn_from_plugin_manager(pm: Arc<Mutex<PluginManager>>) -> PrepareNextTurnFn {
     Arc::new(move |_ctx| {
         let pm = pm.clone();
         Box::pin(async move {
-            let (thinking, model) = {
+            let thinking = {
                 let mut mgr = pm.lock().unwrap_or_else(|e| e.into_inner());
-                let t = mgr.take_pending_next_thinking_level();
-                let m = mgr.take_pending_next_model();
-                (t, m)
+                mgr.take_pending_next_thinking_level()
             };
-            let thinking_level = thinking.and_then(parse_thinking_level);
-            if thinking_level.is_none() && model.is_none() {
-                return None;
-            }
+            let thinking_level = thinking.and_then(parse_thinking_level)?;
             Some(TurnUpdate {
                 context: None,
-                model,
-                thinking_level,
+                model: None,
+                thinking_level: Some(thinking_level),
             })
         })
     })
@@ -694,6 +693,36 @@ mod tests {
             LoopMessage::User(u) => assert_eq!(u.content, "next turn"),
             _ => panic!("expected User"),
         }
+    }
+
+    /// R1 regression: `prepare_next_turn_from_plugin_manager`
+    /// MUST NOT drain `harness-next-model`. That slot is owned
+    /// by the UI's end-of-run handler (`ui/mod.rs::2359`).
+    /// Earlier versions of phase 5 drained both slots in the
+    /// hook, which silently broke `harness/set-next-model`
+    /// because whichever consumer fired first stole the value.
+    #[tokio::test]
+    async fn prepare_next_turn_does_not_drain_next_model_slot() {
+        let Some(pm) = try_pm() else { return };
+        {
+            let mut mgr = pm.lock().unwrap();
+            mgr.eval(r#"(defn swap [_ctx] (harness/set-next-model "gpt-5"))"#)
+                .unwrap();
+            mgr.register("on-tool-end", "swap");
+            mgr.dispatch_tool_hook("on-tool-end", "@{:tool \"t\" :output \"x\"}")
+                .unwrap();
+        }
+        let hook = prepare_next_turn_from_plugin_manager(pm.clone());
+        let result = hook(turn_ctx()).await;
+        // prepareNextTurn returns None because thinking_level
+        // wasn't set. The model slot remains intact.
+        assert!(
+            result.is_none(),
+            "prepare_next_turn should ignore model slot",
+        );
+        // Critical: the UI's end-of-run consumer can still read it.
+        let pending = pm.lock().unwrap().take_pending_next_model();
+        assert_eq!(pending, Some("gpt-5".to_string()));
     }
 
     /// Unknown thinking-level strings get filtered out — a
