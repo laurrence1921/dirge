@@ -685,6 +685,21 @@ pub async fn run_interactive(
     #[cfg(feature = "plugin")]
     let mut current_turn_index: u32 = 0;
     let mut response_start_line: Option<usize> = None;
+    // dirge-ypg: reasoning text buffer + buffer-position anchor.
+    // Mirrors the Token handler's `response_buf`/`response_start_line`
+    // pair so reasoning streams render via the same buffered
+    // `replace_from + render_viewport` path the content stream uses.
+    //
+    // Previously reasoning used the inline `renderer.write()` path
+    // which paints per-chunk directly to stdout via per-segment
+    // `MoveTo`. Under certain conditions that path produces a
+    // staircase pattern (each chunk on a new row, offset by the
+    // previous chunk's end-column) — user-confirmed regression with
+    // current LLM streaming behavior. Buffered rendering paints
+    // every row at col=indent via `render_viewport`'s explicit per-
+    // row `MoveTo(0, i)`, so the issue can't manifest.
+    let mut reasoning_buf = String::new();
+    let mut reasoning_start_line: Option<usize> = None;
     let mut show_reasoning = true;
     let mut was_reasoning = false;
     let mut todo_tools_enabled = false;
@@ -2051,12 +2066,52 @@ pub async fn run_interactive(
                         if !show_reasoning {
                             continue;
                         }
-                        if !agent_line_started {
-                            renderer.write("<dirge> ", Color::DarkMagenta)?;
-                            agent_line_started = true;
-                        }
+                        // dirge-ypg: route reasoning through the same
+                        // buffered path the Token handler uses.
+                        // Inline `renderer.write` was staircasing under
+                        // current LLM stream cadence; `replace_from +
+                        // render_viewport` paints every row at col=indent
+                        // via explicit `MoveTo(0, row)`, sidestepping
+                        // the raw-mode CR-less LF risk entirely.
                         let safe = sanitize_output(&text);
-                        renderer.write(&safe, Color::DarkMagenta)?;
+                        reasoning_buf.push_str(&safe);
+
+                        if reasoning_buf.is_empty() {
+                            was_reasoning = true;
+                            continue;
+                        }
+
+                        let max_width = renderer.content_width().saturating_sub(9);
+                        // Reasoning is plain text (no markdown — pi
+                        // historically renders it as a single
+                        // continuous paragraph with soft wrap). Use
+                        // `wrap::soft_wrap` directly to avoid the
+                        // markdown-parser overhead per chunk.
+                        let wrapped =
+                            crate::ui::wrap::soft_wrap(&reasoning_buf, max_width, "");
+                        let mut styled: Vec<LineEntry> = wrapped
+                            .into_iter()
+                            .map(|t| LineEntry {
+                                text: CompactString::from(t),
+                                color: Color::DarkMagenta,
+                            })
+                            .collect();
+                        if !styled.is_empty() {
+                            styled[0].text = CompactString::from(format!(
+                                "<dirge> {}",
+                                styled[0].text
+                            ));
+                        }
+
+                        if let Some(start) = reasoning_start_line {
+                            renderer.replace_from(start, styled);
+                        } else {
+                            let start = renderer.buffer_len();
+                            reasoning_start_line = Some(start);
+                            renderer.replace_from(start, styled);
+                        }
+                        renderer.render_viewport()?;
+                        agent_line_started = true;
                         was_reasoning = true;
                     }
                     AgentEvent::Token(text) => {
@@ -2067,6 +2122,16 @@ pub async fn run_interactive(
                             was_reasoning = false;
                             response_buf.clear();
                             response_start_line = None;
+                            // dirge-ypg: end-of-reasoning marker. Keep
+                            // the reasoning rendered in the scroll
+                            // (already committed to buffer via the
+                            // Reasoning handler's render_viewport
+                            // pushes); just stop tracking it so the
+                            // next reasoning burst (if any) anchors
+                            // at a fresh buffer position below the
+                            // content that's about to stream.
+                            reasoning_buf.clear();
+                            reasoning_start_line = None;
                         }
                         let safe = sanitize_output(&text);
                         response_buf.push_str(&safe);
@@ -2165,6 +2230,8 @@ pub async fn run_interactive(
                         }
                         response_buf.clear();
                         response_start_line = None;
+                        reasoning_buf.clear();
+                        reasoning_start_line = None;
                         // Tool-call line: rounded chamber TOP border
                         // with the tool name on it. Output lines below
                         // get `│ ` chamber rows; the chamber is closed
@@ -2689,6 +2756,8 @@ pub async fn run_interactive(
                         agent_line_started = false;
                         response_buf.clear();
                         response_start_line = None;
+                        reasoning_buf.clear();
+                        reasoning_start_line = None;
 
                         #[cfg(feature = "loop")]
                         let loop_running = loop_state.as_ref().is_some_and(|ls| ls.active);
@@ -3010,6 +3079,8 @@ pub async fn run_interactive(
                         agent_line_started = false;
                         response_buf.clear();
                         response_start_line = None;
+                        reasoning_buf.clear();
+                        reasoning_start_line = None;
 
                         if !cli.no_session
                             && let Err(e) = crate::session::storage::save_session(session)
@@ -3076,6 +3147,8 @@ pub async fn run_interactive(
                         agent_line_started = false;
                         response_buf.clear();
                         response_start_line = None;
+                        reasoning_buf.clear();
+                        reasoning_start_line = None;
 
                         renderer.write_line(
                             "▒░ auto-compacting then retrying ░▒",
@@ -3264,6 +3337,8 @@ pub async fn run_interactive(
                         agent_line_started = false;
                         response_buf.clear();
                         response_start_line = None;
+                        reasoning_buf.clear();
+                        reasoning_start_line = None;
 
                         // Drop queued interjections — they were typed expecting
                         // the running turn to succeed; replaying them blindly
