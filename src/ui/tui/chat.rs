@@ -6,10 +6,12 @@
 //! height — making the top frame paint the corners and this widget
 //! the body keeps one source of truth for each row's content.
 //!
-//! Selection rendering, mouse mapping, and ANSI escape parsing in
-//! `LineEntry.text` are deferred to a follow-up — this phase covers
-//! plain-text rendering + color + scroll offset, which is enough to
-//! port the streaming chat path.
+//! ANSI escape parsing in `LineEntry.text` is handled via the
+//! `ansi-to-tui` crate — markdown's inline bold/italic/color
+//! emphasis renders as styled Spans rather than literal escape
+//! bytes. Selection rendering + mouse coordinate mapping remain
+//! TODO; the legacy buffer_pos_at logic in renderer.rs is kept
+//! for the eventual port.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
