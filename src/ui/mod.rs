@@ -16,6 +16,10 @@ mod status;
 mod streaming;
 pub(crate) mod sysload;
 mod terminal;
+/// ui-redesign: ratatui-based render pipeline. Lives alongside the
+/// legacy `renderer` module during the staged migration; see beads
+/// dirge-a3x..dirge-eu3 for the phase plan.
+mod tui;
 pub(crate) mod theme;
 mod tree;
 mod wrap;

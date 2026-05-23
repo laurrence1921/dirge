@@ -62,6 +62,11 @@ rmcp = { version = "1.7", optional = true, default-features = false, features = 
 ] }
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = "0.29"
+# ui-redesign: ratatui migration. Replaces the hand-rolled stdout
+# paint paths with widget + Buffer + diff rendering. Uses
+# `default-features = false` + `crossterm` backend to share the
+# crossterm version already in this tree.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "process", "fs", "io-util"] }
