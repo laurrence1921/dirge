@@ -144,21 +144,21 @@ pub async fn build_agent_inner<M: CompletionModel + 'static>(
     // and global dirs are listed so the model knows what procedural
     // knowledge is available (it loads them on demand via the
     // `skill` tool).
-    if let Ok(cwd) = std::env::current_dir() {
-        let paths = crate::extras::dirge_paths::ProjectPaths::new(&cwd);
-        if let Ok(mem) = crate::extras::memory_store::MemoryStore::load_memory(&paths) {
-            let mem_text = mem.format_for_system_prompt();
-            if !mem_text.is_empty() {
-                preamble.push_str(&mem_text);
+    let paths = std::env::current_dir()
+        .map(|c| crate::extras::dirge_paths::ProjectPaths::new(&c))
+        .unwrap_or_else(|_| crate::extras::dirge_paths::ProjectPaths::new(std::path::Path::new(".")));
+    let memory_store: Option<Arc<crate::extras::memory_store::MemoryToolStore>> =
+        match crate::extras::memory_store::MemoryToolStore::load(&paths) {
+            Ok(store) => {
+                let mem_text = store.format_for_system_prompt();
+                if !mem_text.is_empty() {
+                    preamble.push_str(&mem_text);
+                }
+                Some(Arc::new(store))
             }
-        }
-        if let Ok(pit) = crate::extras::memory_store::MemoryStore::load_pitfalls(&paths) {
-            let pit_text = pit.format_for_system_prompt();
-            if !pit_text.is_empty() {
-                preamble.push_str(&pit_text);
-            }
-        }
-    }
+            Err(_) => None,
+        };
+    let skill_manager = crate::extras::skills::manager::SkillManager::new(&paths);
 
     // Inject mode-specific reminders
     if let Some(prompt_name) = &context.current_prompt_name {
@@ -258,12 +258,23 @@ pub async fn build_agent_inner<M: CompletionModel + 'static>(
                 permission.clone(),
                 ask_tx.clone(),
             )),
-            Box::new(tools::SkillTool::new(
-                Arc::clone(&skills),
+            Box::new(tools::SessionSearchTool::new(
+                paths.session_db_path(),
+                None,
                 permission.clone(),
                 ask_tx.clone(),
             )),
-            Box::new(tools::MemoryTool::new(permission.clone(), ask_tx.clone())),
+            Box::new(tools::SkillTool::new(
+                Arc::clone(&skills),
+                skill_manager,
+                permission.clone(),
+                ask_tx.clone(),
+            )),
+            Box::new(tools::MemoryTool::new(
+                memory_store.clone().expect("memory_store not loaded"),
+                permission.clone(),
+                ask_tx.clone(),
+            )),
             Box::new(tools::ApplyPatchTool::with_cache(
                 permission.clone(),
                 ask_tx.clone(),
@@ -486,11 +497,24 @@ pub async fn build_loop_tools(
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let skill_mgr = crate::extras::skills::manager::SkillManager::new(
+        &crate::extras::dirge_paths::ProjectPaths::new(&cwd),
+    );
     let skills: Arc<[Skill]> = Arc::from(
         tokio::task::spawn_blocking(move || skill::discover_skills(&cwd))
             .await
             .unwrap_or_default(),
     );
+
+    let memory_store: Option<Arc<crate::extras::memory_store::MemoryToolStore>> =
+        if let Ok(c) = std::env::current_dir() {
+            let paths = crate::extras::dirge_paths::ProjectPaths::new(&c);
+            crate::extras::memory_store::MemoryToolStore::load(&paths)
+                .ok()
+                .map(Arc::new)
+        } else {
+            None
+        };
 
     // Wrap a built tool as a LoopTool adapter with optional
     // execution_mode override. Async because rig's `definition`
@@ -610,11 +634,28 @@ pub async fn build_loop_tools(
         .await,
     );
 
+    // Session search — read-only DB queries.
+    let session_db_path = std::env::current_dir()
+        .map(|c| crate::extras::dirge_paths::ProjectPaths::new(&c).session_db_path())
+        .unwrap_or_else(|_| std::path::PathBuf::from(".dirge/sessions/state.db"));
+    tools.push(
+        wrap(
+            tools::SessionSearchTool::new(
+                session_db_path,
+                None,
+                permission.clone(),
+                ask_tx.clone(),
+            ),
+            None,
+        )
+        .await,
+    );
+
     // SkillTool runs arbitrary skill bodies — Sequential to be
     // safe (a skill body could do anything).
     tools.push(
         wrap(
-            tools::SkillTool::new(Arc::clone(&skills), permission.clone(), ask_tx.clone()),
+            tools::SkillTool::new(Arc::clone(&skills), skill_mgr, permission.clone(), ask_tx.clone()),
             Some(ToolExecutionMode::Sequential),
         )
         .await,
@@ -623,7 +664,11 @@ pub async fn build_loop_tools(
     // Writes to memory file — Sequential.
     tools.push(
         wrap(
-            tools::MemoryTool::new(permission.clone(), ask_tx.clone()),
+            tools::MemoryTool::new(
+                memory_store.clone().expect("memory_store not loaded in loop tools"),
+                permission.clone(),
+                ask_tx.clone(),
+            ),
             Some(ToolExecutionMode::Sequential),
         )
         .await,

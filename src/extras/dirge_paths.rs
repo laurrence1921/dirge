@@ -125,6 +125,7 @@ impl ProjectPaths {
     }
 
     /// `.dirge/config.yaml` — optional per-project dirge configuration.
+    #[allow(dead_code)]
     pub fn config_path(&self) -> PathBuf {
         self.dirge_dir().join("config.yaml")
     }

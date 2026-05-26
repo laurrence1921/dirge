@@ -30,6 +30,7 @@ const ARCHIVE_AFTER_STALE_DAYS: u64 = 90;
 const INTERVAL_HOURS: u64 = 168; // 7 days
 
 /// Minimum hours of idle time before curator runs.
+#[allow(dead_code)]
 const IDLE_HOURS: u64 = 2;
 
 // ── Curator state ─────────────────────────────────────
@@ -87,6 +88,7 @@ pub struct Curator {
 
 /// The lifecycle state of a skill, as tracked by the curator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum SkillLifecycle {
     Active,
     Stale,
@@ -217,6 +219,7 @@ impl Curator {
 
     /// Record a curator run (for callers that want to force-update
     /// state after a manual run).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn record_run(&mut self) -> Result<(), String> {
         self.state.last_run = Some(now_secs());
         self.state.save(&self.state_path)

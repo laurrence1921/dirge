@@ -17,7 +17,7 @@
 //! - Fire-and-forget (daemon thread pattern)
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::extras::dirge_paths::ProjectPaths;
 use crate::provider::AnyAgent;
@@ -30,6 +30,7 @@ static LAST_REVIEW: AtomicU64 = AtomicU64::new(0);
 
 /// Review prompt focused on project memory and pitfalls.
 /// Port of Hermes's `_MEMORY_REVIEW_PROMPT` adapted for coding context.
+#[allow(dead_code)]
 const MEMORY_REVIEW_PROMPT: &str = r#"Review the conversation above and update project memory.
 
 **CRITICAL: You have ONLY the `memory` and `skill` tools available.** Do not attempt to use read, write, edit, bash, or any other tools — they are not loaded and will fail.
@@ -53,6 +54,7 @@ For each finding, use the `memory` tool to add an entry. Be specific and actiona
 
 /// Review prompt focused on procedural skills.
 /// Port of Hermes's `_SKILL_REVIEW_PROMPT` adapted for coding context.
+#[allow(dead_code)]
 const SKILL_REVIEW_PROMPT: &str = r#"Review the conversation and improve project skills.
 
 **CRITICAL: You have ONLY the `memory` and `skill` tools available.** Do not attempt to use read, write, edit, bash, or any other tools.

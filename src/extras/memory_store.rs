@@ -64,17 +64,10 @@ const THREAT_PATTERNS: &[(&str, &str)] = &[
 /// disk + pending writes) and a frozen snapshot (captured at load
 /// time, never changes mid-session).
 pub struct MemoryStore {
-    /// The file path on disk (e.g., `.dirge/memory/MEMORY.md`).
     file_path: PathBuf,
-    /// Lock file path (e.g., `.dirge/memory/MEMORY.md.lock`).
     lock_path: PathBuf,
-    /// Live entries — the current state reflecting disk + pending
-    /// writes. Modified by add/replace/remove.
     entries: Vec<String>,
-    /// Frozen snapshot captured at load time. Never changes
-    /// mid-session. Goes into the system prompt.
     snapshot: Vec<String>,
-    /// Char budget for this file.
     char_limit: usize,
 }
 
@@ -96,7 +89,8 @@ impl MemoryStore {
 
         // Read file entries.
         let raw = if file_path.exists() {
-            crate::extras::memory::read_file(&paths.memory_dir(), file_name)?
+            std::fs::read_to_string(&file_path)
+                .map_err(|e| format!("Failed to read memory file: {e}"))?
         } else {
             String::new()
         };
@@ -144,6 +138,16 @@ impl MemoryStore {
         }
         out.push_str("\n</project_memory>\n");
         out
+    }
+
+    /// The live entries (current state, reflecting all writes).
+    pub fn live_entries(&self) -> &[String] {
+        &self.entries
+    }
+
+    /// The char budget for this store.
+    pub fn char_limit(&self) -> usize {
+        self.char_limit
     }
 
     /// Add a new entry. Returns error if the entry already exists
@@ -281,6 +285,8 @@ impl MemoryStore {
     }
 
     /// Return the current live entries (for tool responses).
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub fn entries_for(&self, file_name: &str) -> String {
         if self.entries.is_empty() {
             return format!("{} is empty.", file_name);
@@ -335,6 +341,98 @@ impl MemoryStore {
         let content = join_entries(&self.entries);
         crate::fs_atomic::atomic_write_sync(&self.file_path, content.as_bytes())
             .map_err(|e| format!("Failed to write memory file: {e}"))
+    }
+}
+
+// ── MemoryToolStore: dual-target wrapper ──────────────────
+
+use std::sync::Mutex;
+
+/// Holds both memory stores (MEMORY.md + PITFALLS.md) behind
+/// mutexes for use by the `memory` tool. Matches Hermes's
+/// single-store-with-two-targets pattern.
+pub struct MemoryToolStore {
+    memory: Mutex<MemoryStore>,
+    pitfalls: Mutex<MemoryStore>,
+}
+
+impl MemoryToolStore {
+    /// Load both stores from the project's `.dirge/memory/` directory.
+    pub fn load(paths: &ProjectPaths) -> Result<Self, String> {
+        let memory = MemoryStore::load_memory(paths)?;
+        let pitfalls = MemoryStore::load_pitfalls(paths)?;
+        Ok(MemoryToolStore {
+            memory: Mutex::new(memory),
+            pitfalls: Mutex::new(pitfalls),
+        })
+    }
+
+    /// Return the frozen snapshot formatted for system prompt injection.
+    pub fn format_for_system_prompt(&self) -> String {
+        let mem = self.memory.lock().unwrap_or_else(|e| e.into_inner());
+        let pit = self.pitfalls.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = mem.format_for_system_prompt();
+        out.push_str(&pit.format_for_system_prompt());
+        out
+    }
+
+    fn store_for(&self, target: &str) -> &Mutex<MemoryStore> {
+        match target {
+            "memory" => &self.memory,
+            "pitfalls" => &self.pitfalls,
+            _ => &self.memory, // unreachable — validated before dispatch
+        }
+    }
+
+    pub fn add(&self, target: &str, content: &str) -> Result<serde_json::Value, String> {
+        let store = self.store_for(target);
+        let mut guard = store.lock().unwrap_or_else(|e| e.into_inner());
+        guard.add(content)?;
+        Ok(self.success_response(&*guard, target, "Entry added."))
+    }
+
+    pub fn replace(&self, target: &str, old_text: &str, new_content: &str) -> Result<serde_json::Value, String> {
+        let store = self.store_for(target);
+        let mut guard = store.lock().unwrap_or_else(|e| e.into_inner());
+        guard.replace(old_text, new_content)?;
+        Ok(self.success_response(&*guard, target, "Entry replaced."))
+    }
+
+    pub fn remove(&self, target: &str, old_text: &str) -> Result<serde_json::Value, String> {
+        let store = self.store_for(target);
+        let mut guard = store.lock().unwrap_or_else(|e| e.into_inner());
+        guard.remove(old_text)?;
+        Ok(self.success_response(&*guard, target, "Entry removed."))
+    }
+
+    pub fn view(&self, target: &str) -> serde_json::Value {
+        let store = self.store_for(target);
+        let guard = store.lock().unwrap_or_else(|e| e.into_inner());
+        self.success_response(&*guard, target, "")
+    }
+
+    fn success_response(&self, store: &MemoryStore, target: &str, message: &str) -> serde_json::Value {
+        let entries = store.live_entries();
+        let current: usize = entries.iter().map(|e| e.len()).sum::<usize>()
+            + entries.len().saturating_sub(1) * ENTRY_DELIMITER.len();
+        let limit = store.char_limit();
+        let pct = if limit > 0 {
+            ((current as f64 / limit as f64) * 100.0).min(100.0) as u32
+        } else {
+            0
+        };
+
+        let mut resp = serde_json::json!({
+            "success": true,
+            "target": target,
+            "entries": entries,
+            "usage": format!("{}% — {}/{} chars", pct, current, limit),
+            "entry_count": entries.len(),
+        });
+        if !message.is_empty() {
+            resp["message"] = serde_json::Value::String(message.to_string());
+        }
+        resp
     }
 }
 

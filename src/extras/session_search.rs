@@ -22,7 +22,7 @@ use crate::extras::session_db::{SearchResult, SessionDb};
 /// A single search hit in the DISCOVERY shape. Contains the
 /// matched session with context for the agent to understand
 /// what happened.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DiscoveryHit {
     /// Session id for follow-up scroll calls.
     pub session_id: String,
@@ -53,7 +53,7 @@ pub struct DiscoveryHit {
 }
 
 /// A preview of a single message for search results.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct MessagePreview {
     pub id: i64,
     pub role: String,
@@ -62,7 +62,7 @@ pub struct MessagePreview {
 }
 
 /// Result of a SCROLL request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ScrollResult {
     pub session_id: String,
     pub messages: Vec<MessagePreview>,
@@ -72,7 +72,7 @@ pub struct ScrollResult {
 }
 
 /// Result of a BROWSE request — a list of recent sessions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct BrowseSession {
     pub id: String,
     pub root_id: String,
@@ -307,7 +307,7 @@ impl SessionSearch {
     ) -> Result<(String, String, String, String), String> {
         self.db
             .get_anchored_view(session_id, 0, 0)
-            .map(|v| {
+            .map(|_v| {
                 // Just use the session list info — the anchored
                 // view is just a probe to verify the session exists.
                 // Actual metadata comes from list_sessions_rich query.

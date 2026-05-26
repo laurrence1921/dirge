@@ -16,6 +16,7 @@
 use rusqlite::{Connection, OpenFlags, params};
 use std::path::Path;
 
+#[allow(dead_code)]
 const SCHEMA_VERSION: u32 = 1;
 
 pub struct SessionDb {
@@ -177,6 +178,7 @@ impl SessionDb {
 pub struct SearchResult {
     pub session_id: String,
     pub content: String,
+    #[allow(dead_code)]
     pub role: String,
     pub timestamp: String,
 }
@@ -315,6 +317,7 @@ impl SessionDb {
         Ok(results)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_parent_session(&self, session_id: &str, parent_id: &str) -> Result<(), String> {
         self.conn
             .execute(

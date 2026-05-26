@@ -17,6 +17,7 @@ mod read;
 mod repo_overview;
 #[cfg(feature = "semantic")]
 pub mod semantic;
+mod session_search;
 mod skill;
 pub mod task;
 mod task_status;
@@ -40,6 +41,7 @@ pub use plan::{PlanEnterTool, PlanExitTool};
 pub use question::QuestionTool;
 pub use read::ReadTool;
 pub use repo_overview::RepoOverviewTool;
+pub use session_search::SessionSearchTool;
 pub use skill::SkillTool;
 pub use task::TaskTool;
 pub use task_status::TaskStatusTool;
@@ -86,6 +88,7 @@ pub const BUILTIN_TOOL_NAMES: &[&str] = &[
     "websearch",
     "lsp",
     "repo_overview",
+    "session_search",
     "list_symbols",
     "get_symbol_body",
     "find_definition",

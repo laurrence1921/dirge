@@ -109,6 +109,7 @@ pub fn validate_content_size(content: &str) -> Result<(), String> {
 }
 
 /// Build the frontmatter header for a skill.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn build_frontmatter(name: &str, description: &str, tags: &[String]) -> String {
     let mut fm = String::from("---\n");
     fm.push_str(&format!("name: {}\n", name));

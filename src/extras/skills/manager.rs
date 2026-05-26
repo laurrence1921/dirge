@@ -15,6 +15,7 @@ use super::format::{self, SkillSpec};
 use super::guard;
 
 /// Maximum content size for skills (100K chars ≈ 36K tokens).
+#[allow(dead_code)]
 const MAX_SKILL_BYTES: u64 = 100_000;
 
 /// Manager for project-level skill CRUD. Wraps a project's
@@ -38,69 +39,65 @@ impl SkillManager {
             .map_err(|e| format!("Failed to create skills directory: {e}"))
     }
 
-    /// Create a new skill. Writes a `SKILL.md` file in a named
-    /// subdirectory under `.dirge/skills/`.
-    ///
-    /// Returns an error if:
-    /// - The name is invalid
-    /// - A skill with that name already exists
-    /// - The content fails the security scan
-    /// - The content is too large
-    pub fn create(
-        &self,
-        name: &str,
-        description: &str,
-        body: &str,
-        tags: &[String],
-    ) -> Result<(), String> {
+    /// Create a new skill (convenience — builds frontmatter from parts).
+    /// For JSON output (tool), prefer create_from_content.
+    #[cfg(test)]
+    pub fn create(&self, name: &str, description: &str, body: &str, tags: &[String]) -> Result<(), String> {
+        let content = format::build_frontmatter(name, description, tags) + body;
+        self.create_from_content(name, &content)
+    }
+
+    /// Edit an existing skill (convenience — builds frontmatter from parts).
+    /// For JSON output (tool), prefer edit_from_content.
+    #[cfg(test)]
+    pub fn edit(&self, name: &str, description: &str, body: &str, tags: &[String]) -> Result<(), String> {
+        let content = format::build_frontmatter(name, description, tags) + body;
+        self.edit_from_content(name, &content)
+    }
+
+    /// Create a new skill from raw SKILL.md content (frontmatter + body).
+    /// Parses the name from frontmatter's `name:` field; falls back to
+    /// the provided `name` parameter. This matches Hermes's `skill_manage`
+    /// create action where the LLM sends full content.
+    pub fn create_from_content(&self, name: &str, content: &str) -> Result<(), String> {
         format::validate_name(name)?;
+        format::validate_content_size(content)?;
+        guard::scan_skill_content(content)?;
 
-        let full_content = format::build_frontmatter(name, description, tags) + body;
-
-        format::validate_content_size(&full_content)?;
-        guard::scan_skill_content(&full_content)?;
+        // Verify frontmatter is parseable.
+        let spec = format::parse_skill_spec(content, name)
+            .ok_or_else(|| "Invalid skill format: must have YAML frontmatter (--- ... ---) followed by markdown body".to_string())?;
+        // Use the parsed name from frontmatter if it differs from dir name.
+        let actual_name = spec.name;
 
         self.ensure_dir()?;
-        let skill_dir = self.skills_dir.join(name);
-
+        let skill_dir = self.skills_dir.join(&actual_name);
         if skill_dir.exists() {
-            return Err(format!("Skill '{}' already exists", name));
+            return Err(format!("Skill '{}' already exists", actual_name));
         }
 
         std::fs::create_dir_all(&skill_dir)
             .map_err(|e| format!("Failed to create skill directory: {e}"))?;
 
         let skill_path = skill_dir.join("SKILL.md");
-        crate::fs_atomic::atomic_write_sync(&skill_path, full_content.as_bytes())
-            .map_err(|e| format!("Failed to write skill: {e}"))?;
-
-        Ok(())
+        crate::fs_atomic::atomic_write_sync(&skill_path, content.as_bytes())
+            .map_err(|e| format!("Failed to write skill: {e}"))
     }
 
-    /// Edit an existing skill — full SKILL.md rewrite. The skill
-    /// must already exist.
-    pub fn edit(
-        &self,
-        name: &str,
-        description: &str,
-        body: &str,
-        tags: &[String],
-    ) -> Result<(), String> {
+    /// Edit an existing skill from raw SKILL.md content. The skill must exist.
+    pub fn edit_from_content(&self, name: &str, content: &str) -> Result<(), String> {
         let skill_dir = self.skills_dir.join(name);
         if !skill_dir.is_dir() {
             return Err(format!("Skill '{}' not found", name));
         }
 
-        let full_content = format::build_frontmatter(name, description, tags) + body;
-
-        format::validate_content_size(&full_content)?;
-        guard::scan_skill_content(&full_content)?;
+        format::validate_name(name)?;
+        format::validate_content_size(content)?;
+        guard::scan_skill_content(content)?;
 
         let skill_path = skill_dir.join("SKILL.md");
-        crate::fs_atomic::atomic_write_sync(&skill_path, full_content.as_bytes())
-            .map_err(|e| format!("Failed to write skill: {e}"))?;
-
-        Ok(())
+        crate::fs_atomic::atomic_write_sync(&skill_path, content.as_bytes())
+            .map_err(|e| format!("Failed to write skill: {e}"))
     }
 
     /// Patch a skill — targeted find-and-replace within SKILL.md.
@@ -173,6 +170,7 @@ impl SkillManager {
     }
 
     /// Check if a skill exists.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn exists(&self, name: &str) -> bool {
         self.skills_dir.join(name).join("SKILL.md").is_file()
     }

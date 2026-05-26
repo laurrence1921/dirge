@@ -11,7 +11,6 @@ pub mod mcp;
 pub mod acp;
 
 pub mod dirge_paths;
-pub mod memory;
 pub mod memory_store;
 pub mod session_db;
 pub mod session_search;
