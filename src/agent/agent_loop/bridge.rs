@@ -98,6 +98,25 @@ impl EventBridge {
         match event {
             LoopEvent::AgentStart => Vec::new(),
 
+            // Context compaction: log the event but no AgentEvent
+            // conversion needed — the UI shows a status line when it
+            // sees the event. In the future this could emit a
+            // dedicated AgentEvent variant for richer UI feedback.
+            LoopEvent::ContextCompacted {
+                ref new_session_id,
+                tokens_before,
+                tokens_after,
+            } => {
+                tracing::info!(
+                    target: "dirge::agent_loop",
+                    session_id = %new_session_id,
+                    tokens_before,
+                    tokens_after,
+                    "context compacted — session rotated"
+                );
+                Vec::new()
+            }
+
             LoopEvent::AgentEnd { messages } => {
                 // Phase 4.5h-1: classify the run's terminal state
                 // by inspecting the LAST assistant message:

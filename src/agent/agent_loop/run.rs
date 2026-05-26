@@ -431,6 +431,50 @@ pub async fn run_loop(
                             "context-manager: fold recommended ({})",
                             if decision.aggressive { "aggressive" } else { "normal" },
                         );
+
+                        // Context compaction: prune old tool results and
+                        // compress the middle section of the conversation.
+                        // Port of Hermes's compression pass.
+                        if let Some(prompt_tokens) = token_usage.map(|u| u.input_tokens) {
+                            if crate::agent::compression::should_compress(
+                                prompt_tokens,
+                                ctx_max,
+                            ) {
+                                let before =
+                                    crate::agent::compression::estimate_messages_tokens(
+                                        &current_context.messages,
+                                    );
+                                // Prune large tool outputs — cheap pre-pass,
+                                // no LLM call needed.
+                                let pruned =
+                                    crate::agent::compression::prune_tool_outputs(
+                                        &current_context.messages,
+                                        5, // protect last 5 messages
+                                    );
+                                current_context.messages = pruned;
+
+                                // Build a summary marker as a system message
+                                // so the model knows context was compacted.
+                                let total = crate::agent::compression::estimate_messages_tokens(
+                                    &current_context.messages,
+                                );
+                                let new_id = format!(
+                                    "compacted-{}",
+                                    uuid::Uuid::new_v4()
+                                        .to_string()
+                                        .chars()
+                                        .take(8)
+                                        .collect::<String>()
+                                );
+                                let _ = emit
+                                    .send(LoopEvent::ContextCompacted {
+                                        new_session_id: new_id,
+                                        tokens_before: before,
+                                        tokens_after: total,
+                                    })
+                                    .await;
+                            }
+                        }
                     }
                     PostUsageDecisionKind::ExitWithSummary => {
                         tracing::warn!(
@@ -438,6 +482,34 @@ pub async fn run_loop(
                             ratio = %decision.ratio,
                             "context-manager: forcing summary and ending turn",
                         );
+                        // When context is critically over the threshold,
+                        // prune aggressively and insert a compression marker.
+                        let before = crate::agent::compression::estimate_messages_tokens(
+                            &current_context.messages,
+                        );
+                        let pruned = crate::agent::compression::prune_tool_outputs(
+                            &current_context.messages,
+                            3, // protect only last 3
+                        );
+                        current_context.messages = pruned;
+                        let after = crate::agent::compression::estimate_messages_tokens(
+                            &current_context.messages,
+                        );
+                        let new_id = format!(
+                            "compacted-{}",
+                            uuid::Uuid::new_v4()
+                                .to_string()
+                                .chars()
+                                .take(8)
+                                .collect::<String>()
+                        );
+                        let _ = emit
+                            .send(LoopEvent::ContextCompacted {
+                                new_session_id: new_id,
+                                tokens_before: before,
+                                tokens_after: after,
+                            })
+                            .await;
                     }
                     _ => {}
                 }

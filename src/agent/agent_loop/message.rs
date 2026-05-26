@@ -346,6 +346,16 @@ pub enum LoopEvent {
         #[allow(dead_code)]
         tool_results: Vec<ToolResultMessage>,
     },
+
+    /// Context compression fired — middle turns were summarized
+    /// and the session id rotated. The UI should show a status
+    /// line. Carries the new session id for lineage tracking.
+    /// Port of Hermes's compression event.
+    ContextCompacted {
+        new_session_id: String,
+        tokens_before: u64,
+        tokens_after: u64,
+    },
 }
 
 impl LoopEvent {
@@ -365,6 +375,7 @@ impl LoopEvent {
             LoopEvent::AgentEnd { .. } => "agent_end",
             LoopEvent::TurnStart => "turn_start",
             LoopEvent::TurnEnd { .. } => "turn_end",
+            LoopEvent::ContextCompacted { .. } => "context_compacted",
         }
     }
 }
