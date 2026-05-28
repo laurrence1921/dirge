@@ -3,7 +3,8 @@ use rig::completion::CompletionModel;
 use std::sync::Arc;
 
 use crate::agent::prompt::{
-    PROJECT_SKILLS_PREAMBLE, SKILLS_GUIDANCE, SYSTEM_PROMPT, TODO_TOOLS_PROMPT,
+    MEMORY_GUIDANCE, PROJECT_SKILLS_PREAMBLE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    SYSTEM_PROMPT, TODO_TOOLS_PROMPT,
 };
 use crate::agent::tools;
 use crate::agent::tools::ToolCache;
@@ -33,7 +34,14 @@ pub(crate) fn assemble_base_preamble() -> String {
     let mut p = SYSTEM_PROMPT.to_string();
     p.push('\n');
     p.push_str(TODO_TOOLS_PROMPT);
+    // dirge-xxun: skills self-improvement nudge (hermes SKILLS_GUIDANCE).
     p.push_str(SKILLS_GUIDANCE);
+    // dirge-a6bv: memory + past-session recall guidance (hermes
+    // MEMORY_GUIDANCE + SESSION_SEARCH_GUIDANCE). Both tools are always
+    // present in dirge's registry, so we inject unconditionally rather
+    // than tool-gating like hermes does on `valid_tool_names`.
+    p.push_str(MEMORY_GUIDANCE);
+    p.push_str(SESSION_SEARCH_GUIDANCE);
     p
 }
 
@@ -1202,6 +1210,44 @@ mod reminder_tests {
         assert!(
             p.contains("## Skill creation and maintenance"),
             "missing heading"
+        );
+    }
+
+    /// dirge-a6bv — assembled preamble carries hermes's MEMORY_GUIDANCE
+    /// and SESSION_SEARCH_GUIDANCE blocks: when to save vs not save,
+    /// declarative-fact phrasing, and the past-session-recall nudge.
+    #[test]
+    fn base_preamble_includes_memory_and_search_guidance() {
+        let p = assemble_base_preamble();
+
+        // MEMORY_GUIDANCE — must include the do/don't-save rules and the
+        // declarative-vs-imperative example pair.
+        assert!(p.contains("persistent memory"), "missing memory-tool intro");
+        assert!(
+            p.contains("Do NOT save task progress"),
+            "missing do-not-save rule"
+        );
+        assert!(
+            p.contains("PR numbers"),
+            "missing example list of stale artifacts"
+        );
+        assert!(
+            p.contains("declarative facts"),
+            "missing declarative-fact framing"
+        );
+        assert!(
+            p.contains("Procedures and workflows belong in skills"),
+            "missing memory-vs-skills boundary"
+        );
+
+        // SESSION_SEARCH_GUIDANCE — must name the trigger.
+        assert!(
+            p.contains("session_search"),
+            "missing session_search tool name"
+        );
+        assert!(
+            p.contains("before asking them to repeat"),
+            "missing past-session-recall nudge"
         );
     }
 

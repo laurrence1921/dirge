@@ -114,6 +114,46 @@ pub const SKILLS_GUIDANCE: &str = "\n\n## Skill creation and maintenance\n\n\
      patch it immediately with `skill(action='patch', ...)` — don't wait to \
      be asked. Skills that aren't maintained become liabilities.";
 
+/// In-session guidance for the per-project `memory` tool. Ported from
+/// hermes-agent (`agent/prompt_builder.py:150-171`, `MEMORY_GUIDANCE`).
+/// Hermes uses a single global memory; dirge memory is per-project
+/// (see `~/.claude/projects/<slug>/memory/MEMORY.md` analogue at
+/// `extras::memory_store::MemoryToolStore`). The advice on what to
+/// save / not save and the declarative-fact phrasing applies equally
+/// to both. See dirge-a6bv.
+pub const MEMORY_GUIDANCE: &str = "\n\n## Memory usage\n\n\
+     You have persistent memory across sessions on this project. Save \
+     durable facts using the `memory` tool: user preferences, environment \
+     details, tool quirks, and stable conventions. Memory is injected into \
+     every turn, so keep it compact and focused on facts that will still \
+     matter later.\n\
+     Prioritize what reduces future user steering — the most valuable \
+     memory is one that prevents the user from having to correct or remind \
+     you again. User preferences and recurring corrections matter more \
+     than procedural task details.\n\
+     Do NOT save task progress, session outcomes, completed-work logs, or \
+     temporary TODO state to memory; use `session_search` to recall those \
+     from past transcripts. Specifically: do not record PR numbers, issue \
+     numbers, commit SHAs, 'fixed bug X', 'submitted PR Y', 'Phase N done', \
+     file counts, or any artifact that will be stale in 7 days. If a fact \
+     will be stale in a week, it does not belong in memory. If you've \
+     discovered a new way to do something, or solved a problem that could \
+     be necessary later, save it as a skill with the `skill` tool.\n\
+     Write memories as declarative facts, not instructions to yourself. \
+     'User prefers concise responses' ✓ — 'Always respond concisely' ✗. \
+     'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. \
+     Imperative phrasing gets re-read as a directive in later sessions \
+     and can cause repeated work or override the user's current request. \
+     Procedures and workflows belong in skills, not memory.";
+
+/// In-session guidance for `session_search`. Ported verbatim from
+/// hermes-agent (`agent/prompt_builder.py:173-177`,
+/// `SESSION_SEARCH_GUIDANCE`). See dirge-a6bv.
+pub const SESSION_SEARCH_GUIDANCE: &str = "\n\n## Past-session recall\n\n\
+     When the user references something from a past conversation or you \
+     suspect relevant cross-session context exists, use `session_search` \
+     to recall it before asking them to repeat themselves.";
+
 /// Phase-3 — appended to the system prompt when
 /// `dynamic_tool_search` is on. Tells the model only a small
 /// always-on set of tools ships every turn and the rest must be
