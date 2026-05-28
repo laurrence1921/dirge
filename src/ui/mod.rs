@@ -2238,18 +2238,15 @@ pub async fn run_interactive(
                                 token_savings,
                             );
                         }
-                        // dirge-5gn6: fire on_session_switch BEFORE
-                        // rewriting session.id so plugin providers
-                        // see both ids in a single hook call.
-                        // `reset=false` because compaction is a
-                        // continuation, not a fresh chat.
+                        // dirge-hs61: capture the outgoing id, do
+                        // ALL the mutations (id rotation + disk
+                        // save), THEN fire the on_session_switch
+                        // hook. Pre-fix the hook fired in the
+                        // middle: DB rotated, messages drained, but
+                        // on-disk JSON still had the old id —
+                        // providers querying either store saw
+                        // inconsistent triple state.
                         let parent_id = session.id.to_string();
-                        crate::agent::review::maybe_fire_session_switch(
-                            &agent,
-                            new_session_id,
-                            &parent_id,
-                            false,
-                        );
                         session.id = compact_str::CompactString::new(
                             new_session_id.as_str(),
                         );
@@ -2262,6 +2259,47 @@ pub async fn run_interactive(
                                 "could not persist rotated session after compaction",
                             );
                         }
+                        // dirge-g72y: rebuild the agent so
+                        // SessionSearchTool picks up the new id.
+                        // Pre-fix the tool was constructed with the
+                        // pre-rotation id and silently excluded the
+                        // wrong session — same bug class as the
+                        // dirge-502b regression that cmd_session.rs
+                        // already handles by rebuilding on swap.
+                        let model = client.completion_model(session.model.to_string());
+                        agent = crate::provider::build_agent(
+                            model,
+                            cli,
+                            cfg,
+                            context,
+                            permission.clone(),
+                            ask_tx.clone(),
+                            question_tx.clone(),
+                            plan_tx.clone(),
+                            bg_store.clone(),
+                            #[cfg(feature = "lsp")]
+                            lsp_manager.clone(),
+                            sandbox.clone(),
+                            #[cfg(feature = "mcp")]
+                            mcp_manager,
+                            #[cfg(feature = "semantic")]
+                            semantic_manager,
+                            Some(session.id.to_string()),
+                        )
+                        .await;
+                        // dirge-5gn6: fire on_session_switch only AFTER
+                        // everything is consistent: id rotated in
+                        // memory, JSON saved to disk under new id,
+                        // agent rebuilt. Providers can now query DB
+                        // or disk and see a coherent snapshot.
+                        // `reset=false` — compaction continues the
+                        // logical conversation.
+                        crate::agent::review::maybe_fire_session_switch(
+                            &agent,
+                            new_session_id,
+                            &parent_id,
+                            /* reset = */ false,
+                        );
                         renderer.write_line(
                             &format!(
                                 "  context compacted: {} → {} tokens (session {})",

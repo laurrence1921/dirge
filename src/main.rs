@@ -810,18 +810,22 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
         }
+        // dirge-bx4g + dirge-4tuq: --print is a one-shot. Fire
+        // on_session_end on the persisted-or-not transcript so
+        // plugin providers always see the boundary, then attempt
+        // the save. Pre-fix the order was reversed and `?` on
+        // save_session short-circuited past the hook — exactly
+        // the scenario (disk failure / permission error) where
+        // the provider's own backend may be the only durable
+        // record. The hook itself is fire-and-forget; saves can
+        // fail without losing the lifecycle signal.
         if !cli.no_session {
             session.add_message(MessageRole::User, &msg);
             session.add_message(MessageRole::Assistant, &response);
-            session::storage::save_session(&session)?;
-        }
-        // dirge-bx4g: --print is a one-shot. After the response is
-        // saved (or skipped under --no-session), the session is
-        // ending. Fire on_session_end so plugin providers see the
-        // boundary. Skipped when --no-session is set since the
-        // session_id_for_print was already None.
-        if !cli.no_session {
             crate::agent::review::maybe_fire_session_end(&agent, &session);
+            if let Err(e) = session::storage::save_session(&session) {
+                eprintln!("warning: failed to save session: {}", e);
+            }
         }
     } else {
         #[cfg(feature = "loop")]

@@ -102,7 +102,20 @@ pub(super) async fn cmd_sessions(ctx: &mut SlashCtx<'_>, parts: &[&str]) -> anyh
                 // still holds the provider keyed to the leaving
                 // session.
                 crate::agent::review::maybe_fire_session_end(ctx.agent, ctx.session);
+                // dirge-v8a8: capture the outgoing id before the
+                // assignment so we can fire on_session_switch with
+                // both halves of the rotation. The loaded session
+                // is a continuation (not a fresh chat), so
+                // reset=false — providers that key state on
+                // session.id should rebind, not flush.
+                let old_id = ctx.session.id.to_string();
                 *ctx.session = s;
+                crate::agent::review::maybe_fire_session_switch(
+                    ctx.agent,
+                    &ctx.session.id,
+                    &old_id,
+                    /* reset = */ false,
+                );
                 let restored = ctx.session.current_prompt_name.clone();
                 if let Some(name) = restored.as_deref()
                     && let Some(p) = ctx.context.prompts.get(name).cloned()

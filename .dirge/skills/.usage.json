@@ -1,83 +1,83 @@
 {
-  "session-db-migration": {
-    "use_count": 0,
-    "view_count": 7,
-    "patch_count": 0,
-    "last_viewed_at": "2026-05-28T04:11:16.719307+00:00",
-    "created_at": "2026-05-28T03:16:51.642338+00:00",
-    "state": "active",
-    "pinned": false
-  },
   "steering-pipeline-debug": {
     "use_count": 0,
-    "view_count": 7,
+    "view_count": 8,
     "patch_count": 0,
-    "last_viewed_at": "2026-05-28T04:11:16.724956+00:00",
+    "last_viewed_at": "2026-05-28T04:16:15.661555+00:00",
     "created_at": "2026-05-28T03:16:51.647294+00:00",
     "state": "active",
     "pinned": false
   },
   "dead-code-cleanup": {
     "use_count": 1,
-    "view_count": 8,
+    "view_count": 9,
     "patch_count": 0,
     "last_used_at": "2026-05-26T19:34:56.640777+00:00",
-    "last_viewed_at": "2026-05-28T04:11:16.623241+00:00",
+    "last_viewed_at": "2026-05-28T04:16:15.572275+00:00",
     "created_at": "2026-05-26T19:34:56.627150+00:00",
     "state": "active",
     "pinned": false
   },
   "per-turn-session-db-writes": {
     "use_count": 0,
-    "view_count": 7,
+    "view_count": 8,
     "patch_count": 0,
-    "last_viewed_at": "2026-05-28T04:11:16.701517+00:00",
+    "last_viewed_at": "2026-05-28T04:16:15.614866+00:00",
     "created_at": "2026-05-28T03:16:51.632047+00:00",
-    "state": "active",
-    "pinned": false
-  },
-  "parallel-subagent-implementation": {
-    "use_count": 0,
-    "view_count": 7,
-    "patch_count": 0,
-    "last_viewed_at": "2026-05-28T04:11:16.688965+00:00",
-    "created_at": "2026-05-28T03:16:51.626955+00:00",
     "state": "active",
     "pinned": false
   },
   "flaky-test-env-var-fix": {
     "use_count": 0,
-    "view_count": 7,
+    "view_count": 8,
     "patch_count": 0,
-    "last_viewed_at": "2026-05-28T04:11:16.645815+00:00",
+    "last_viewed_at": "2026-05-28T04:16:15.577254+00:00",
     "created_at": "2026-05-28T03:16:51.606580+00:00",
     "state": "active",
     "pinned": false
   },
   "security-guard-regex-upgrade": {
     "use_count": 0,
-    "view_count": 7,
+    "view_count": 8,
     "patch_count": 0,
-    "last_viewed_at": "2026-05-28T04:11:16.713087+00:00",
+    "last_viewed_at": "2026-05-28T04:16:15.640384+00:00",
     "created_at": "2026-05-28T03:16:51.637220+00:00",
     "state": "active",
     "pinned": false
   },
   "add-agent-event-variant": {
     "use_count": 0,
-    "view_count": 7,
+    "view_count": 8,
     "patch_count": 1,
-    "last_viewed_at": "2026-05-28T04:11:16.613309+00:00",
+    "last_viewed_at": "2026-05-28T04:16:15.564975+00:00",
     "last_patched_at": "2026-05-27T00:12:48.865965+00:00",
     "created_at": "2026-05-27T00:12:48.865953+00:00",
     "state": "active",
     "pinned": false
   },
+  "parallel-subagent-implementation": {
+    "use_count": 0,
+    "view_count": 8,
+    "patch_count": 0,
+    "last_viewed_at": "2026-05-28T04:16:15.602425+00:00",
+    "created_at": "2026-05-28T03:16:51.626955+00:00",
+    "state": "active",
+    "pinned": false
+  },
+  "session-db-migration": {
+    "use_count": 0,
+    "view_count": 8,
+    "patch_count": 0,
+    "last_viewed_at": "2026-05-28T04:16:15.655176+00:00",
+    "created_at": "2026-05-28T03:16:51.642338+00:00",
+    "state": "active",
+    "pinned": false
+  },
   "hermes-porting-methodology": {
     "use_count": 0,
-    "view_count": 7,
+    "view_count": 8,
     "patch_count": 0,
-    "last_viewed_at": "2026-05-28T04:11:16.670527+00:00",
+    "last_viewed_at": "2026-05-28T04:16:15.591896+00:00",
     "created_at": "2026-05-28T03:16:51.616889+00:00",
     "state": "active",
     "pinned": false
