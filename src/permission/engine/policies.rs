@@ -44,15 +44,30 @@ impl OpMatch {
     }
 }
 
-/// One configured authorization rule: "for this operation class and
-/// resource pattern, apply this effect." The ordered list reads
-/// top-to-bottom as the precedence (last match wins within the list).
+/// One configured authorization rule: "for this operation class
+/// (optionally narrowed to a concrete tool) and resource pattern,
+/// apply this effect." The ordered list reads top-to-bottom as the
+/// precedence (last match wins within the list).
+///
+/// `tool` lets the legacy per-tool config (`grep`, `read`, …) map
+/// faithfully even though several tools share an [`Operation`] — a
+/// `grep` rule narrows to `tool == "grep"` so it doesn't also gate
+/// `read`. The breaking op-based config (Phase 4) leaves `tool: None`.
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub op: OpMatch,
+    pub tool: Option<String>,
     pub pattern: Pattern,
     pub effect: Effect,
     pub original: String,
+}
+
+impl Rule {
+    fn matches(&self, req: &AccessRequest, key: &str) -> bool {
+        self.op.matches(req.op)
+            && self.tool.as_deref().is_none_or(|t| t == req.tool)
+            && self.pattern.matches(key)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +147,9 @@ impl Decider for ConfiguredRulePolicy {
         "configured-rule"
     }
     fn applies_to(&self, op: Operation, resource: &Resource) -> bool {
+        // Coarse: op + pattern (the tool narrowing is applied in
+        // `decide`, which has the full request). A false positive here
+        // only means `decide` runs and returns None — harmless.
         self.rules
             .iter()
             .any(|r| r.op.matches(op) && r.pattern.matches(resource.match_key()))
@@ -140,7 +158,7 @@ impl Decider for ConfiguredRulePolicy {
         let key = resource.match_key();
         self.rules
             .iter()
-            .filter(|r| r.op.matches(req.op) && r.pattern.matches(key))
+            .filter(|r| r.matches(req, key))
             .next_back() // last match wins
             .map(|r| Verdict::new(r.effect, format!("rule {:?} → {:?}", r.original, r.effect)))
     }
@@ -267,12 +285,11 @@ impl Decider for ExternalDirPolicy {
             return None;
         }
         let key = resource.match_key();
-        let matched = req.resources.iter().next().map(|_| ()).and_then(|_| {
-            self.rules
-                .iter()
-                .filter(|r| r.op.matches(req.op) && r.pattern.matches(key))
-                .next_back()
-        });
+        let matched = self
+            .rules
+            .iter()
+            .filter(|r| r.matches(req, key))
+            .next_back();
         match matched {
             Some(r) => Some(Verdict::new(
                 r.effect,
@@ -570,6 +587,18 @@ mod tests {
         assert_eq!(d.effect, Effect::Ask);
     }
 
+    /// Concise rule constructor for tests (`tool: None`, op-based).
+    fn rule(op: OpMatch, pattern: Pattern, effect: Effect) -> Rule {
+        let original = pattern.original.clone();
+        Rule {
+            op,
+            tool: None,
+            pattern,
+            effect,
+            original,
+        }
+    }
+
     /// Build an engine whose ConfiguredRulePolicy carries `rules`.
     fn engine_with_rules(rules: Vec<Rule>) -> Engine {
         Engine::new(
@@ -593,18 +622,16 @@ mod tests {
     #[test]
     fn configured_rule_last_match_wins_and_beats_builtin() {
         let e = engine_with_rules(vec![
-            Rule {
-                op: OpMatch::One(Operation::Execute),
-                pattern: Pattern::new_command("cargo *"),
-                effect: Effect::Allow,
-                original: "cargo *".into(),
-            },
-            Rule {
-                op: OpMatch::One(Operation::Read),
-                pattern: Pattern::new("/secret/**"),
-                effect: Effect::Deny,
-                original: "/secret/**".into(),
-            },
+            rule(
+                OpMatch::One(Operation::Execute),
+                Pattern::new_command("cargo *"),
+                Effect::Allow,
+            ),
+            rule(
+                OpMatch::One(Operation::Read),
+                Pattern::new("/secret/**"),
+                Effect::Deny,
+            ),
         ]);
         // explicit allow on execute cargo (would otherwise default to Ask)
         let d = e.authorize(&req(
@@ -628,18 +655,12 @@ mod tests {
     fn last_match_wins_within_rule_list() {
         // two matching rules; the later one wins
         let e = engine_with_rules(vec![
-            Rule {
-                op: OpMatch::Any,
-                pattern: Pattern::new("/proj/**"),
-                effect: Effect::Deny,
-                original: "/proj/**".into(),
-            },
-            Rule {
-                op: OpMatch::One(Operation::Edit),
-                pattern: Pattern::new("/proj/ok/**"),
-                effect: Effect::Allow,
-                original: "/proj/ok/**".into(),
-            },
+            rule(OpMatch::Any, Pattern::new("/proj/**"), Effect::Deny),
+            rule(
+                OpMatch::One(Operation::Edit),
+                Pattern::new("/proj/ok/**"),
+                Effect::Allow,
+            ),
         ]);
         let d = e.authorize(&req(
             Operation::Edit,

@@ -32,6 +32,7 @@
 // allow once `authorize`/`Engine`/the policy types are wired in.
 #![allow(dead_code)]
 
+mod build;
 mod classify;
 pub mod policies;
 pub mod policy;
