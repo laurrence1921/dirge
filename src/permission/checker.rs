@@ -25,6 +25,29 @@ pub enum CheckResult {
     Denied(String),
 }
 
+/// Render a decision's audit trail for the `/why` command: the final
+/// effect + deciding policy, then every applicable policy's vote in
+/// evaluation order (and the skipped ones, so it's clear what did and
+/// didn't apply).
+fn format_decision(tool: &str, input: &str, decision: &engine::types::Decision) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "why: {tool} {input:?}");
+    let _ = writeln!(out, "  → {:?}  ({})", decision.effect, decision.reason());
+    for e in &decision.trace {
+        if e.applied {
+            let eff = e
+                .effect
+                .map(|x| format!("{x:?}"))
+                .unwrap_or_else(|| "—".to_string());
+            let _ = writeln!(out, "  · {:<16} {eff:<6} {}", e.policy, e.why);
+        } else {
+            let _ = writeln!(out, "  · {:<16} (n/a)  {}", e.policy, e.why);
+        }
+    }
+    out
+}
+
 /// Map an engine [`Decision`](engine::types::Decision) onto the legacy
 /// `CheckResult` returned by the `check`/`check_path` facade.
 fn effect_to_result(decision: engine::types::Decision) -> CheckResult {
@@ -405,6 +428,16 @@ impl PermissionChecker {
         let decision = self.engine.authorize(&req);
         self.engine.commit(&req, &decision);
         decision
+    }
+
+    /// Dry-run a decision and render its full audit trail (which
+    /// policy decided and why, plus every applicable policy's vote).
+    /// Pure: no commit, no loop-guard accounting. Backs the `/why`
+    /// command so the user can see exactly what governs an action.
+    pub fn explain(&self, tool: &str, input: &str, is_path: bool) -> String {
+        let req = self.build_request(tool, input, is_path);
+        let decision = self.engine.authorize(&req);
+        format_decision(tool, input, &decision)
     }
 
     /// Normalize a (tool, input) pair into a one-resource request. The

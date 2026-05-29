@@ -1447,3 +1447,30 @@ mod reported_permission_ux_regressions {
         let _ = std::fs::remove_dir_all(&proj);
     }
 }
+
+/// `/why` / `explain`: the rendered trace names the final effect, the
+/// deciding policy, and the applicable policies' votes.
+#[test]
+fn explain_renders_decision_trace() {
+    let checker = PermissionChecker::new(
+        &PermissionConfig::default(),
+        SecurityMode::Standard,
+        Some(std::path::PathBuf::from("/tmp/proj")),
+    );
+    // An unfamiliar bash command falls to the default → Ask.
+    let report = checker.explain("bash", "frobnicate --hard", false);
+    assert!(report.contains("frobnicate"), "names the input: {report}");
+    assert!(report.contains("Ask"), "shows the effect: {report}");
+    assert!(
+        report.contains("default"),
+        "names the deciding policy: {report}"
+    );
+
+    // A read is transparently allowed by the builtin-allow policy.
+    let report = checker.explain("read", "/tmp/proj/src/main.rs", true);
+    assert!(report.contains("Allow"), "read allowed: {report}");
+    assert!(
+        report.contains("builtin-allow"),
+        "names builtin-allow as decider: {report}",
+    );
+}

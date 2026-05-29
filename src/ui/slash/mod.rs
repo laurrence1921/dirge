@@ -454,6 +454,7 @@ pub async fn handle_slash(
         "/undo" => cmd_session::cmd_undo(&mut ctx).await?,
         "/retry" => cmd_session::cmd_retry(&mut ctx).await?,
         "/allow" => cmd_misc::cmd_allow(&mut ctx, &parts, text).await?,
+        "/why" => cmd_misc::cmd_why(&mut ctx, &parts).await?,
         "/help" => cmd_misc::cmd_help(&mut ctx).await?,
         "/kill" => cmd_misc::cmd_kill(&mut ctx, &parts).await?,
         _ => {
@@ -661,6 +662,7 @@ pub fn slash_command_names() -> Vec<&'static str> {
         "/toggle",
         "/tree",
         "/undo",
+        "/why",
     ];
     #[cfg(feature = "git-worktree")]
     {
@@ -1059,6 +1061,7 @@ mod tests {
             "/toggle",
             "/tree",
             "/undo",
+            "/why",
         ];
         let list = slash_command_names();
         for name in ALWAYS_ON {

@@ -229,6 +229,39 @@ pub(super) async fn cmd_quit(ctx: &mut SlashCtx<'_>) -> anyhow::Result<()> {
     Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "quit").into())
 }
 
+/// `/why <tool> [input]` — explain how the permission engine would
+/// decide a tool call: the final effect, the deciding policy, and
+/// every applicable policy's vote. Dry-run (no side effects).
+pub(super) async fn cmd_why(ctx: &mut SlashCtx<'_>, parts: &[&str]) -> anyhow::Result<()> {
+    let perm = match ctx.permission {
+        Some(p) => p,
+        None => {
+            ctx.renderer.write_line(
+                "permission system unavailable (--no-tools mode?)",
+                c_error(),
+            )?;
+            return Ok(());
+        }
+    };
+    let Some(tool) = parts.get(1).copied() else {
+        ctx.renderer.write_line(
+            "usage: /why <tool> [input]   e.g. /why bash cargo test   ·   /why write src/main.rs",
+            c_error(),
+        )?;
+        return Ok(());
+    };
+    let input = parts.get(2..).map(|s| s.join(" ")).unwrap_or_default();
+    let is_path = crate::permission::engine::is_path_tool_name(tool);
+    let report = {
+        let guard = perm.lock().unwrap_or_else(|e| e.into_inner());
+        guard.explain(tool, &input, is_path)
+    };
+    for line in report.lines() {
+        ctx.renderer.write_line(line, c_result())?;
+    }
+    Ok(())
+}
+
 pub(super) async fn cmd_allow(
     ctx: &mut SlashCtx<'_>,
     parts: &[&str],
