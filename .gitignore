@@ -36,6 +36,7 @@ model-prompts/
 *.db
 .beads-credential-key
 .claude/
+.dirge/
 
 # Memory-tool backup snapshots (timestamped rotations from the
 # memory subsystem). They're local-only and should never be

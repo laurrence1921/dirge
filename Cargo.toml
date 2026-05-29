@@ -3,12 +3,12 @@
 # taken on crates.io. The installed BINARY is still `dirge` (see [[bin]]),
 # so users run: `cargo install dirge-agent` then the `dirge` command.
 name = "dirge-agent"
-version = "1.0.0"
+version = "0.1.0"
 edition = "2024"
 # edition 2024 was stabilized in Rust 1.85; pin the MSRV so older
 # toolchains get a clear error instead of a cryptic edition failure.
 rust-version = "1.85"
-authors = ["Giuseppe Della Vedova", "Yogthos <yogthos@gmail.com>"]
+authors = ["Yogthos <yogthos@gmail.com>"]
 description = "Minimalistic coding agent written in Rust, optimized for memory footprint and performance"
 license = "GPL-3.0-only"
 homepage = "https://github.com/dirge-code/dirge"

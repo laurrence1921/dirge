@@ -1,84 +1,84 @@
 {
-  "steering-pipeline-debug": {
+  "flaky-test-env-var-fix": {
     "use_count": 0,
-    "view_count": 17,
+    "view_count": 28,
     "patch_count": 0,
-    "last_viewed_at": "2026-05-28T14:28:14.021233+00:00",
-    "created_at": "2026-05-28T03:16:51.647294+00:00",
-    "state": "active",
-    "pinned": false
-  },
-  "dead-code-cleanup": {
-    "use_count": 1,
-    "view_count": 18,
-    "patch_count": 0,
-    "last_used_at": "2026-05-26T19:34:56.640777+00:00",
-    "last_viewed_at": "2026-05-28T14:28:13.918658+00:00",
-    "created_at": "2026-05-26T19:34:56.627150+00:00",
+    "last_viewed_at": "2026-05-29T21:39:14.873191+00:00",
+    "created_at": "2026-05-28T03:16:51.606580+00:00",
     "state": "active",
     "pinned": false
   },
   "security-guard-regex-upgrade": {
     "use_count": 0,
-    "view_count": 17,
+    "view_count": 28,
     "patch_count": 0,
-    "last_viewed_at": "2026-05-28T14:28:14.011070+00:00",
+    "last_viewed_at": "2026-05-29T21:39:14.900987+00:00",
     "created_at": "2026-05-28T03:16:51.637220+00:00",
     "state": "active",
     "pinned": false
   },
-  "flaky-test-env-var-fix": {
-    "use_count": 0,
-    "view_count": 17,
+  "dead-code-cleanup": {
+    "use_count": 1,
+    "view_count": 29,
     "patch_count": 0,
-    "last_viewed_at": "2026-05-28T14:28:13.956284+00:00",
-    "created_at": "2026-05-28T03:16:51.606580+00:00",
-    "state": "active",
-    "pinned": false
-  },
-  "session-db-migration": {
-    "use_count": 0,
-    "view_count": 17,
-    "patch_count": 0,
-    "last_viewed_at": "2026-05-28T14:28:14.016134+00:00",
-    "created_at": "2026-05-28T03:16:51.642338+00:00",
-    "state": "active",
-    "pinned": false
-  },
-  "hermes-porting-methodology": {
-    "use_count": 0,
-    "view_count": 17,
-    "patch_count": 0,
-    "last_viewed_at": "2026-05-28T14:28:13.972902+00:00",
-    "created_at": "2026-05-28T03:16:51.616889+00:00",
+    "last_used_at": "2026-05-26T19:34:56.640777+00:00",
+    "last_viewed_at": "2026-05-29T21:39:14.866756+00:00",
+    "created_at": "2026-05-26T19:34:56.627150+00:00",
     "state": "active",
     "pinned": false
   },
   "parallel-subagent-implementation": {
     "use_count": 0,
-    "view_count": 17,
+    "view_count": 28,
     "patch_count": 0,
-    "last_viewed_at": "2026-05-28T14:28:13.988965+00:00",
+    "last_viewed_at": "2026-05-29T21:39:14.887839+00:00",
     "created_at": "2026-05-28T03:16:51.626955+00:00",
     "state": "active",
     "pinned": false
   },
-  "add-agent-event-variant": {
+  "hermes-porting-methodology": {
     "use_count": 0,
-    "view_count": 17,
-    "patch_count": 1,
-    "last_viewed_at": "2026-05-28T14:28:13.911394+00:00",
-    "last_patched_at": "2026-05-27T00:12:48.865965+00:00",
-    "created_at": "2026-05-27T00:12:48.865953+00:00",
+    "view_count": 28,
+    "patch_count": 0,
+    "last_viewed_at": "2026-05-29T21:39:14.880663+00:00",
+    "created_at": "2026-05-28T03:16:51.616889+00:00",
     "state": "active",
     "pinned": false
   },
   "per-turn-session-db-writes": {
     "use_count": 0,
-    "view_count": 17,
+    "view_count": 28,
     "patch_count": 0,
-    "last_viewed_at": "2026-05-28T14:28:14.000339+00:00",
+    "last_viewed_at": "2026-05-29T21:39:14.895922+00:00",
     "created_at": "2026-05-28T03:16:51.632047+00:00",
+    "state": "active",
+    "pinned": false
+  },
+  "steering-pipeline-debug": {
+    "use_count": 0,
+    "view_count": 28,
+    "patch_count": 0,
+    "last_viewed_at": "2026-05-29T21:39:14.915715+00:00",
+    "created_at": "2026-05-28T03:16:51.647294+00:00",
+    "state": "active",
+    "pinned": false
+  },
+  "add-agent-event-variant": {
+    "use_count": 0,
+    "view_count": 28,
+    "patch_count": 1,
+    "last_viewed_at": "2026-05-29T21:39:14.858884+00:00",
+    "last_patched_at": "2026-05-27T00:12:48.865965+00:00",
+    "created_at": "2026-05-27T00:12:48.865953+00:00",
+    "state": "active",
+    "pinned": false
+  },
+  "session-db-migration": {
+    "use_count": 0,
+    "view_count": 28,
+    "patch_count": 0,
+    "last_viewed_at": "2026-05-29T21:39:14.909931+00:00",
+    "created_at": "2026-05-28T03:16:51.642338+00:00",
     "state": "active",
     "pinned": false
   }
