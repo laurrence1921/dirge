@@ -35,9 +35,11 @@ slash-command list, see the top-level [README](../README.md#slash-commands).
 |-----|--------|
 | Ctrl+C / Ctrl+D / Esc | Interrupt running agent (also clears queued interjections) |
 | Type while running | Queues your message; runs after the current turn finishes. The runner also stops at the next tool-result boundary so the message is picked up quickly instead of waiting for the whole multi-turn run. Status line shows `q:N` for pending count. |
-| Ctrl+X | Drop the most-recently-queued interjection |
+| Ctrl+K | Kill subagent on focused chat tab |
+| Ctrl+X | Close active chat window |
+| Ctrl+N / Ctrl+P | Switch to next/previous chat window (when multiple subagent chats exist) |
 | Esc-Esc (idle) | Open rewind picker (truncate history) |
-| Ctrl+F | Search chat buffer |
+| Ctrl+O | Expand collapsed tool result |
 | Ctrl+R | Toggle reasoning visibility |
 | PgUp/PgDn | Scroll chat history |
 | Home/End | Jump to top/bottom |

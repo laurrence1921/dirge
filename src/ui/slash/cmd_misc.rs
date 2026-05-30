@@ -666,29 +666,33 @@ pub(super) async fn cmd_help(ctx: &mut SlashCtx<'_>) -> anyhow::Result<()> {
         "  drag                  select text; mouse-up copies to clipboard",
         c_result(),
     )?;
-    renderer.write_line(
-        "  y / Esc (while selecting)  copy selection / clear without copy",
-        c_result(),
-    )?;
     renderer.write_line("  Ctrl+R                 toggle reasoning", c_result())?;
-    renderer.write_line("  Ctrl+C / Ctrl+D        interrupt/quit", c_result())?;
+    renderer.write_line("  Ctrl+C / Ctrl+D / Esc  interrupt/quit", c_result())?;
     renderer.write_line(
         "  Ctrl+N / Ctrl+P        next / previous chat (subagent windows)",
         c_result(),
     )?;
+    renderer.write_line("  Ctrl+X                 close chat window", c_result())?;
     renderer.write_line(
-        "  Ctrl+X / /tasks        cycle through chat windows",
+        "  Ctrl+K                 kill subagent on focused tab",
         c_result(),
     )?;
     renderer.write_line(
-        "  Alt+X                  drop last queued interjection",
+        "  Ctrl+O                 expand collapsed tool result",
+        c_result(),
+    )?;
+    renderer.write_line(
+        "  Esc-Esc (idle)         open rewind picker (truncate history)",
+        c_result(),
+    )?;
+    renderer.write_line(
+        "  ! / !! cmd             run shell command (visible / invisible)",
         c_result(),
     )?;
     renderer.write_line(
         "  (type while agent runs to queue a follow-up message)",
         c_result(),
     )?;
-    renderer.write_line("  PgUp/PgDn / wheel      scroll chat history", c_result())?;
 
     #[cfg(feature = "plugin")]
     if let Some(pm_arc) = crate::plugin::hook::global() {

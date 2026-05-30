@@ -211,8 +211,10 @@ pub(super) async fn cmd_tasks(ctx: &mut SlashCtx<'_>) -> anyhow::Result<()> {
             ctx.renderer
                 .write_line(&format!("  {} [{}] {}", marker, i, name), c_result())?;
         }
-        ctx.renderer
-            .write_line("  (Ctrl-N / Ctrl-P / Ctrl-X to switch)", theme::dim())?;
+        ctx.renderer.write_line(
+            "  (Ctrl-N / Ctrl-P to cycle, Ctrl+X to close)",
+            theme::dim(),
+        )?;
     }
     Ok(())
 }
