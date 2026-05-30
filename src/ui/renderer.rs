@@ -234,6 +234,13 @@ pub struct SelectionRange {
 
 /// Order two selection endpoints into row-major (start, end) so the
 /// renderer never has to handle the upward-drag case mid-paint.
+/// Word-character test for double-click select. Matches the input
+/// editor's definition (alphanumeric + underscore) so selecting a word
+/// behaves consistently across the chat buffer and the input box.
+fn is_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
 pub fn normalize_selection_range(a: (usize, usize), b: (usize, usize)) -> SelectionRange {
     if (a.0, a.1) <= (b.0, b.1) {
         SelectionRange { start: a, end: b }
@@ -292,6 +299,14 @@ pub struct Renderer {
     /// end position used when dragging past the line's right edge.
     pub selection_start: Option<(usize, usize)>,
     pub selection_end: Option<(usize, usize)>,
+    /// Time + cell of the last mouse-down, for double-click detection
+    /// (select-word). `None` until the first click or after a
+    /// double-click is consumed.
+    pub last_click: Option<(std::time::Instant, u16, u16)>,
+    /// Set when a double-click selected a word: the following mouse-up
+    /// must NOT extend/clear that selection (it would collapse the word
+    /// to the click point). Consumed on the next mouse-up.
+    pub suppress_next_mouseup: bool,
     /// Visibility mode for the left / right side panels, controlled
     /// independently (`/display`, `/panel`, and the `display` config).
     /// The main conversation pane is always shown.
@@ -357,6 +372,10 @@ pub struct Renderer {
     /// slash commands from the most recent `draw_bottom` call.
     /// Empty when no tab-completion is active.
     cached_completion_preview: String,
+    /// Inline dark-gray ghost completion for an in-progress slash command
+    /// (e.g. typing `/dis` shows `play`). Empty when not applicable;
+    /// accepted with the Right arrow.
+    cached_input_ghost: String,
     /// Chat content rect from the most recent `tui_redraw` call.
     /// Used by `buffer_pos_at` to map mouse `(row, col)` into the
     /// chat buffer using the actual ratatui layout, not the legacy
@@ -412,6 +431,8 @@ impl Renderer {
             selection_active: false,
             selection_start: None,
             selection_end: None,
+            last_click: None,
+            suppress_next_mouseup: false,
             left_panel_mode: PanelMode::Auto,
             right_panel_mode: PanelMode::Auto,
             panel_data: PanelData::default(),
@@ -436,6 +457,7 @@ impl Renderer {
             cached_status: String::new(),
             cached_is_running: false,
             cached_completion_preview: String::new(),
+            cached_input_ghost: String::new(),
             cached_chat_rect: None,
             modified_offset: 0,
             last_modified_len: None,
@@ -493,6 +515,7 @@ impl Renderer {
             cached_status,
             cached_is_running,
             cached_completion_preview,
+            cached_input_ghost,
             cached_chat_rect,
             modified_offset,
             cached_modified_rect,
@@ -544,6 +567,7 @@ impl Renderer {
                 cursor_col: *cached_input_cursor_col,
                 is_running: *cached_is_running,
                 completion_preview: cached_completion_preview.as_str(),
+                ghost: cached_input_ghost.as_str(),
             }
         };
 
@@ -1175,6 +1199,33 @@ impl Renderer {
         self.cached_chat_rect = Some(rect);
     }
 
+    /// Word-selection bounds (start inclusive, end exclusive, both as
+    /// `(line, char)`) around a buffer position, for double-click select.
+    /// Returns `None` when the position isn't on a word character (e.g.
+    /// whitespace / punctuation), so a double-click on a gap selects
+    /// nothing rather than a stray glyph.
+    pub fn word_bounds_at(&self, pos: (usize, usize)) -> Option<((usize, usize), (usize, usize))> {
+        let (line, ch) = pos;
+        let entry = self.buffer.get(line)?;
+        let chars: Vec<char> = crate::ui::ansi::strip_ansi(&entry.text).chars().collect();
+        if chars.is_empty() {
+            return None;
+        }
+        let i = ch.min(chars.len() - 1);
+        if !is_word_char(chars[i]) {
+            return None;
+        }
+        let mut start = i;
+        while start > 0 && is_word_char(chars[start - 1]) {
+            start -= 1;
+        }
+        let mut end = i;
+        while end + 1 < chars.len() && is_word_char(chars[end + 1]) {
+            end += 1;
+        }
+        Some(((line, start), (line, end + 1)))
+    }
+
     pub fn clear_selection(&mut self) {
         self.selection_active = false;
         self.selection_start = None;
@@ -1498,6 +1549,14 @@ impl Renderer {
         self.cached_input_rows = rows;
         self.cached_input_cursor_row = cursor_row;
         self.cached_input_cursor_col = cursor_col;
+        // Inline ghost completion: only when the cursor is at the very end
+        // of an in-progress slash command (so the ghost paints right after
+        // the typed text and Right-to-accept is unambiguous).
+        self.cached_input_ghost = if cursor_byte == full.len() {
+            crate::ui::slash::ghost_suffix(full).unwrap_or_default()
+        } else {
+            String::new()
+        };
         self.cached_status = status.to_string();
         self.cached_is_running = is_running;
         self.input_rows = total_rows.clamp(1, MAX_INPUT_VISIBLE_LINES as u16);

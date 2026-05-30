@@ -1127,6 +1127,17 @@ impl InputEditor {
             }
 
             KeyCode::Right => {
+                // At end-of-line with a slash-command ghost completion
+                // showing, Right accepts it (fills in the suffix) instead
+                // of just moving the cursor.
+                if self.cursor == self.buffer.len()
+                    && let Some(suffix) = crate::ui::slash::ghost_suffix(self.buffer.as_str())
+                {
+                    self.buffer.push_str(&suffix);
+                    self.cursor = self.buffer.len();
+                    self.reset_kill_accumulation();
+                    return None;
+                }
                 if self.cursor < self.buffer.len() {
                     self.cursor = next_pos(&self.buffer, self.cursor);
                 }
@@ -1701,6 +1712,28 @@ mod tests {
         e.history_down();
         assert_eq!(e.buffer.as_str(), "");
         assert!(e.history_draft.is_none());
+    }
+
+    #[test]
+    fn right_arrow_accepts_slash_ghost_completion() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut e = InputEditor::new();
+        e.insert_str("/disp");
+        let out = e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(out.is_none());
+        assert_eq!(e.buffer.as_str(), "/display");
+        assert_eq!(e.cursor, e.buffer.len());
+    }
+
+    #[test]
+    fn right_arrow_without_ghost_moves_cursor() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut e = InputEditor::new();
+        e.insert_str("hello");
+        e.cursor = 0; // not at end, and not a slash command
+        e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(e.cursor, 1);
+        assert_eq!(e.buffer.as_str(), "hello");
     }
 
     #[test]

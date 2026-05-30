@@ -9,6 +9,28 @@ pub(crate) fn is_placeholder_pattern(p: &str) -> bool {
     p == ALLOW_PLACEHOLDER
 }
 
+/// Find the head (first word) of the first command segment in a bash
+/// line that ISN'T a benign navigation/no-op prefix. Used so an
+/// allow-always suggestion targets the command that actually needs
+/// permission (e.g. `python3` in `cd /x && python3 …`) rather than an
+/// already-auto-allowed prefix like `cd`. Returns `None` when every
+/// segment is benign (then the caller falls back to the first token).
+///
+/// Splits on shell segment separators only to locate the head — the
+/// goal is just to skip a leading benign command, so a heredoc/quoted
+/// body further right is irrelevant (the first significant head appears
+/// before it).
+fn significant_bash_head(command: &str) -> Option<&str> {
+    const BENIGN: &[&str] = &[
+        "cd", "pushd", "popd", "export", "set", "source", ".", ":", "true", "env",
+    ];
+    command
+        .split(|c| matches!(c, '&' | '|' | ';' | '\n'))
+        .map(str::trim)
+        .filter_map(|seg| seg.split_whitespace().next())
+        .find(|head| !BENIGN.contains(head))
+}
+
 pub(crate) fn suggest_pattern(tool: &str, input: &str) -> String {
     // Refuse to suggest a catch-all wildcard for empty / whitespace-
     // only input. A user mis-clicking "(a) allow always" on an empty
@@ -23,8 +45,16 @@ pub(crate) fn suggest_pattern(tool: &str, input: &str) -> String {
     }
     match tool {
         "bash" => {
-            let first = trimmed.split_whitespace().next().unwrap_or(PLACEHOLDER);
-            format!("{} *", first)
+            // Base the suggestion on the first SIGNIFICANT command, not
+            // literally the first token. A compound command is split into
+            // a permission claim per segment; benign navigation prefixes
+            // like `cd` are already auto-allowed (`default_bash_rules`),
+            // so suggesting `cd *` for `cd /x && python3 …` saves a rule
+            // that covers nothing — the `python3` segment keeps
+            // prompting. Skip the benign prefix and suggest `python3 *`.
+            let head = significant_bash_head(trimmed)
+                .unwrap_or_else(|| trimmed.split_whitespace().next().unwrap_or(PLACEHOLDER));
+            format!("{} *", head)
         }
         // Path-arg tools: suggest a `<parent>/**` glob from the input
         // path. One arm for all of them — previously read/write/edit/
@@ -128,6 +158,35 @@ mod tests {
         // Unknown tool with empty input shouldn't yield catch-all.
         let p = suggest_pattern("mcp_tool:foo", "");
         assert!(!p.contains('*'), "unknown tool empty input: {p:?}");
+    }
+
+    /// A compound command with a benign `cd` prefix must suggest the
+    /// SIGNIFICANT command, not `cd *` (which is already auto-allowed and
+    /// leaves the real command prompting forever). Regression for the
+    /// "permission keeps re-asking" report.
+    #[test]
+    fn compound_bash_suggests_significant_command_not_cd() {
+        assert_eq!(
+            suggest_pattern("bash", "cd /tmp/proj && python3 gen.py"),
+            "python3 *"
+        );
+        // Heredoc body (with its own punctuation) doesn't confuse the head pick.
+        assert_eq!(
+            suggest_pattern(
+                "bash",
+                "cd src && python3 - <<PY\nwith open('a','w') as f: f.write(x)\nPY"
+            ),
+            "python3 *"
+        );
+        // Multiple benign prefixes are all skipped.
+        assert_eq!(
+            suggest_pattern("bash", "export X=1 && cd app && npm run build"),
+            "npm *"
+        );
+        // A plain significant command is unchanged.
+        assert_eq!(suggest_pattern("bash", "cargo test --all"), "cargo *");
+        // cd-only (no significant segment) falls back to the first token.
+        assert_eq!(suggest_pattern("bash", "cd /tmp"), "cd *");
     }
 
     // Non-empty inputs still produce the expected suggestion.

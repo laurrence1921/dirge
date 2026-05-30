@@ -37,6 +37,9 @@ pub enum BottomBody<'a> {
         /// tab completion is active (e.g. "/mode  /panel  /quit").
         /// Empty string = no preview.
         completion_preview: &'a str,
+        /// Inline dark-gray ghost completion painted right after the
+        /// typed text (e.g. typing "/dis" shows "play"). Empty = none.
+        ghost: &'a str,
     },
     /// Modal overlay replacing the editor. `title` shows in the
     /// frame's top border (e.g. `[ALERT]`); `lines` paint inside
@@ -106,6 +109,7 @@ impl<'a> Widget for BottomStrip<'a> {
                 rows,
                 is_running,
                 completion_preview,
+                ghost,
                 ..
             }) => paint_editor_box(
                 buf,
@@ -113,6 +117,7 @@ impl<'a> Widget for BottomStrip<'a> {
                 rows,
                 *is_running,
                 completion_preview,
+                ghost,
                 self.border_style,
             ),
             Some(BottomBody::Overlay { title, lines }) => {
@@ -263,12 +268,14 @@ fn paint_empty_box(buf: &mut Buffer, area: Rect, style: Style) {
     paint_frame(buf, area, None, style);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_editor_box(
     buf: &mut Buffer,
     area: Rect,
     rows: &[String],
     is_running: bool,
     completion_preview: &str,
+    ghost: &str,
     style: Style,
 ) {
     paint_frame(buf, area, None, style);
@@ -289,12 +296,27 @@ fn paint_editor_box(
     let visible_rows = (area.height as usize).saturating_sub(2);
     let has_preview = !completion_preview.is_empty();
     let editor_rows = visible_rows.saturating_sub(if has_preview { 1 } else { 0 });
+    // Track the last painted row so the inline ghost completion can be
+    // drawn right after its text.
+    let mut last_row: Option<(u16, usize)> = None;
     for (i, row_text) in rows.iter().take(editor_rows).enumerate() {
         let y = area.y + 1 + i as u16;
         let prompt = if i == 0 { prompt_main } else { prompt_cont };
         buf.set_stringn(area.x + 1, y, prompt, inner_w, accent);
         let text_x = area.x + 1 + prompt_w as u16;
         buf.set_stringn(text_x, y, row_text, text_avail, user);
+        last_row = Some((y, row_text.chars().count()));
+    }
+    // Inline dark-gray ghost completion, painted right after the typed
+    // text on the last row (only set when the cursor is at end-of-input).
+    if !ghost.is_empty()
+        && let Some((y, used)) = last_row
+    {
+        let remaining = text_avail.saturating_sub(used);
+        if remaining > 0 {
+            let ghost_x = area.x + 1 + prompt_w as u16 + used as u16;
+            buf.set_stringn(ghost_x, y, ghost, remaining, dim);
+        }
     }
     if has_preview {
         let preview_y = area.y + 1 + editor_rows as u16;
@@ -537,6 +559,7 @@ mod tests {
                     cursor_col: 2,
                     is_running: false,
                     completion_preview: "",
+                    ghost: "",
                 });
                 f.render_widget(widget, area);
             })
