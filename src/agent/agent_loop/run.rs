@@ -1211,10 +1211,13 @@ pub async fn run_loop(
                         content: notice.clone(),
                     })
                     .await;
-                // Still record it in the returned transcript so headless /
-                // subagent collectors (and a resumed model) see that the
-                // run was truncated. This is the model-facing transcript,
-                // not the user's on-screen echo.
+                // Also include it in `run_agent_loop`'s returned message
+                // list so a caller that inspects the produced messages can
+                // see the run was truncated. NOTE: the interactive and
+                // headless paths drive display from the LoopEvent stream
+                // (the SystemNotice above), not from this return value —
+                // today's production callers discard it — so this is a
+                // contract nicety, not the display mechanism.
                 new_messages.push(LoopMessage::User(super::message::UserMessage {
                     content: notice,
                 }));

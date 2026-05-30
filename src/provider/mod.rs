@@ -1055,6 +1055,17 @@ impl AnyAgent {
                 AgentEvent::TurnEnd { .. } => {
                     num_turns += 1;
                 }
+                AgentEvent::SystemNotice { content } => {
+                    // dirge-originated runtime notice (e.g. the
+                    // max-agent-turns cap). Headless drives output from
+                    // events, so surface it to stderr — otherwise a
+                    // truncated run looks like a clean success to a
+                    // `--print` consumer.
+                    if had_output {
+                        println!();
+                    }
+                    eprintln!("{}", content);
+                }
                 // Plugin-driven model swap after last run puts the
                 // request in the mgr; caller drains via
                 // take_pending_next_model().

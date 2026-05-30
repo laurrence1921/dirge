@@ -68,58 +68,27 @@ mod strip_system_reminder_tests {
     }
 }
 
-/// Print a (possibly multi-line) user-typed message to the chat log
-/// as a single visual message: the first line gets the `<you> `
-/// prefix, continuation lines are indented to align under it, and
-/// blank lines stay blank (so an expanded paste doesn't produce a
-/// column of empty `<you>` markers, as reported by users pasting
-/// multi-paragraph text). `sanitize_output` is applied per line to
-/// strip control bytes — the paste-placeholder SOH markers in
-/// particular must not leak to the terminal.
-pub(crate) fn write_user_lines(renderer: &mut Renderer, text: &str) -> std::io::Result<()> {
-    const PREFIX: &str = "<you> ";
-    // Visible width of `PREFIX` — 6 cells. Used as the continuation
-    // indent so wrapped lines line up under the first character of
-    // the message body.
-    const CONT_INDENT: &str = "      ";
-    let mut prefix_emitted = false;
-    for line in text.lines() {
-        let safe = sanitize_output(line);
-        if safe.is_empty() {
-            // Preserve blank lines as actual blank rows — no prefix,
-            // no indent — so paragraphs stay paragraphs in the log.
-            renderer.write_line("", theme::user())?;
-            continue;
-        }
-        let formatted = if !prefix_emitted {
-            prefix_emitted = true;
-            format!("{}{}", PREFIX, safe)
-        } else {
-            format!("{}{}", CONT_INDENT, safe)
-        };
-        renderer.write_line(&formatted, theme::user())?;
-    }
-    // If `text` was entirely empty (no `lines()` iterations) emit a
-    // single `<you>` line so the user still sees their (empty)
-    // submission acknowledged.
-    if !prefix_emitted {
-        renderer.write_line(PREFIX, theme::user())?;
-    }
-    Ok(())
-}
-
-/// Print a dirge-originated log/notice (e.g. the max-agent-turns cap
-/// message) to the chat log: the first line gets a `<system> ` prefix,
-/// continuation lines align under it, and the whole thing renders in the
-/// warning color so it reads as a runtime notice rather than something
-/// the user typed (which uses `<you>` + the user color via
-/// `write_user_lines`). `sanitize_output` strips control bytes per line.
-pub(crate) fn write_system_lines(renderer: &mut Renderer, text: &str) -> std::io::Result<()> {
-    const PREFIX: &str = "<system> ";
-    // Visible width of `PREFIX` — 9 cells — used as the continuation
-    // indent so wrapped lines line up under the message body.
-    const CONT_INDENT: &str = "         ";
-    let color = theme::warn();
+/// Print a (possibly multi-line) prefixed message to the chat log as a
+/// single visual block: the first line gets `prefix`, continuation lines
+/// are indented to align under it, blank lines stay blank (so an expanded
+/// paste / multi-line notice doesn't produce a column of empty prefix
+/// markers), and an entirely-empty `text` still emits one prefix line so
+/// the submission is acknowledged. Every line (including blanks and the
+/// fallback) renders in `color`; `sanitize_output` strips control bytes
+/// per line so paste-placeholder SOH markers and ANSI escapes can't leak
+/// to the terminal.
+///
+/// Shared by `write_user_lines` (`<you>`) and `write_system_lines`
+/// (`<system>`) so their wrap/blank/empty handling can't drift.
+fn write_prefixed_lines(
+    renderer: &mut Renderer,
+    prefix: &str,
+    color: crossterm::style::Color,
+    text: &str,
+) -> std::io::Result<()> {
+    // Continuation indent = the prefix's visible width, so wrapped lines
+    // line up under the first character of the body.
+    let cont_indent = " ".repeat(prefix.chars().count());
     let mut prefix_emitted = false;
     for line in text.lines() {
         let safe = sanitize_output(line);
@@ -129,16 +98,37 @@ pub(crate) fn write_system_lines(renderer: &mut Renderer, text: &str) -> std::io
         }
         let formatted = if !prefix_emitted {
             prefix_emitted = true;
-            format!("{}{}", PREFIX, safe)
+            format!("{}{}", prefix, safe)
         } else {
-            format!("{}{}", CONT_INDENT, safe)
+            format!("{}{}", cont_indent, safe)
         };
         renderer.write_line(&formatted, color)?;
     }
     if !prefix_emitted {
-        renderer.write_line(PREFIX, color)?;
+        renderer.write_line(prefix, color)?;
     }
     Ok(())
+}
+
+/// Print a (possibly multi-line) user-typed message to the chat log: the
+/// first line gets the `<you> ` prefix in the user color, continuation
+/// lines align under it. See `write_prefixed_lines`.
+pub(crate) fn write_user_lines(renderer: &mut Renderer, text: &str) -> std::io::Result<()> {
+    write_prefixed_lines(renderer, "<you> ", theme::user(), text)
+}
+
+/// Print a dirge-originated log/notice (e.g. the max-agent-turns cap) to
+/// the chat log with a `<system> ` prefix in the *warning* color so it
+/// reads as a transient runtime notice that stands out from the user's
+/// own messages and agent output.
+///
+/// Note the deliberate divergence from persisted session-history system
+/// messages (`MessageRole::System`), which render as `<sys>` in
+/// `theme::system()` — see `render_session` in `ui/events.rs`. Those are
+/// durable context (summaries, bootstrap); this is an attention-grabbing
+/// live log line, hence the louder warning color and distinct label.
+pub(crate) fn write_system_lines(renderer: &mut Renderer, text: &str) -> std::io::Result<()> {
+    write_prefixed_lines(renderer, "<system> ", theme::warn(), text)
 }
 
 /// Flatten a multi-line / control-char-bearing string into one safe line
