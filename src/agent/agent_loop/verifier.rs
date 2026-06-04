@@ -74,7 +74,11 @@ impl VerifierGate {
     ) {
         let mut inner = self.inner.lock_ignore_poison();
         match tool_name {
-            "write" | "edit" | "apply_patch" => {
+            // `edit_minified` is a real source-mutating tool (dirge-b1rr) —
+            // without it here, an agent that edits only via edit_minified
+            // never sets `edited_code` and the verify-before-done gate stays
+            // silent on unverified changes.
+            "write" | "edit" | "apply_patch" | "edit_minified" => {
                 if touches_code_file(args) {
                     inner.edited_code = true;
                 }
@@ -226,6 +230,21 @@ mod tests {
         let g = VerifierGate::new();
         g.record_outcome("edit", &json!({"path": "src/auth.rs"}), &ok_result(), false);
         let n = nudge(&g).expect("should nudge");
+        assert!(n.contains("didn't run the tests"), "verify nudge: {n}");
+    }
+
+    /// dirge-b1rr: an `edit_minified` change to a code file must count as
+    /// a code edit so the verify-before-done gate fires.
+    #[test]
+    fn edit_minified_counts_as_a_code_edit() {
+        let g = VerifierGate::new();
+        g.record_outcome(
+            "edit_minified",
+            &json!({"path": "src/auth.rs"}),
+            &ok_result(),
+            false,
+        );
+        let n = nudge(&g).expect("edit_minified should arm the verify nudge");
         assert!(n.contains("didn't run the tests"), "verify nudge: {n}");
     }
 

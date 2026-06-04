@@ -41,11 +41,16 @@ impl From<Action> for Effect {
 /// Map a concrete tool name to its coarse [`Operation`].
 pub fn tool_operation(tool: &str) -> Operation {
     match tool {
-        "read" | "grep" | "find_files" | "glob" | "list_dir" | "repo_overview" | "lsp"
-        | "list_symbols" | "get_symbol_body" | "find_definition" | "find_callers"
-        | "find_callees" => Operation::Read,
+        "read" | "read_minified" | "grep" | "find_files" | "glob" | "list_dir"
+        | "repo_overview" | "lsp" | "list_symbols" | "get_symbol_body" | "find_definition"
+        | "find_callers" | "find_callees" => Operation::Read,
         "write" => Operation::Edit,
-        "edit" | "apply_patch" => Operation::Edit,
+        // `edit_minified` mutates source like `edit`/`apply_patch`. It
+        // reaches `enforce` under the `"edit"` tool string (so permission
+        // already covered it), but the storm breaker + verifier gate key
+        // off the CONCRETE name via this map — without the entry they
+        // treated minified edits as non-mutating (dirge-b1rr).
+        "edit" | "apply_patch" | "edit_minified" => Operation::Edit,
         "bash" | "shell" => Operation::Execute,
         "webfetch" | "websearch" => Operation::Network,
         "mcp_tool" => Operation::Mcp,
@@ -260,6 +265,10 @@ mod tests {
         assert_eq!(tool_operation("webfetch"), Operation::Network);
         assert_eq!(tool_operation("mcp_tool"), Operation::Mcp);
         assert_eq!(tool_operation("plugin_tool"), Operation::Plugin);
+        // dirge-b1rr: the minified read/edit pair classify like their
+        // canonical siblings (storm + verifier key off the concrete name).
+        assert_eq!(tool_operation("edit_minified"), Operation::Edit);
+        assert_eq!(tool_operation("read_minified"), Operation::Read);
         assert_eq!(tool_operation("memory"), Operation::Memory);
         assert_eq!(tool_operation("skill"), Operation::Skill);
         assert_eq!(tool_operation("question"), Operation::Meta);
