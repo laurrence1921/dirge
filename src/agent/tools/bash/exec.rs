@@ -264,7 +264,32 @@ pub(super) fn spawn_streaming_shell(
 ) -> tokio::task::JoinHandle<()> {
     use crate::agent::tools::bg_shell::ShellStatus;
     use std::process::Stdio;
+
+    /// dirge-e8sb: terminal-status backstop. The happy path records
+    /// the real exit status at the end of the task; if the task dies
+    /// any other way — aborted outside `kill()` (runtime teardown) or
+    /// a panic — this guard's Drop records `Failed` so the registry
+    /// never reports a dead shell as Running. `finish` is
+    /// first-terminal-wins, so the backstop is a no-op whenever a
+    /// real status (Exited/Killed/Failed) landed first.
+    struct FinishOnDrop {
+        store: crate::agent::tools::bg_shell::BackgroundShellStore,
+        id: String,
+    }
+    impl Drop for FinishOnDrop {
+        fn drop(&mut self) {
+            self.store.finish(
+                &self.id,
+                ShellStatus::Failed("drain task ended without recording an exit status".into()),
+            );
+        }
+    }
+
     tokio::spawn(async move {
+        let _finish_backstop = FinishOnDrop {
+            store: store.clone(),
+            id: id.clone(),
+        };
         let mut cmd = cmd;
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())

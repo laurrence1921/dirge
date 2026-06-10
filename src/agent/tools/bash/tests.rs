@@ -12,6 +12,39 @@ use crate::sync_util::LockExt;
 use tokio::process::Command;
 use tokio::time::Duration;
 
+/// dirge-e8sb: if the drain task dies WITHOUT recording an exit
+/// status — aborted outside the kill() path (runtime teardown) or a
+/// panic — the registry entry must still go terminal. A dead shell
+/// reported as Running forever misleads /tasks and bash_output.
+#[tokio::test]
+async fn aborted_drain_task_still_finalizes_status() {
+    use crate::agent::tools::bg_shell::BackgroundShellStore;
+
+    let store = BackgroundShellStore::new();
+    let id = "abort-backstop-test".to_string();
+    store.register(id.clone(), "sleep 30".into());
+
+    let mut cmd = Command::new("sleep");
+    cmd.arg("30");
+    let handle = super::exec::spawn_streaming_shell(cmd, store.clone(), id.clone(), None);
+
+    // Let the task spawn the child and enter its drain loop.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (_, status) = store.read_new(&id).expect("shell registered");
+    assert!(status.is_running(), "shell should be running pre-abort");
+
+    // Abort OUTSIDE the kill() path — kill() sets Killed itself; this
+    // simulates the paths nothing finalizes (teardown, panic).
+    handle.abort();
+    let _ = handle.await;
+
+    let (_, status) = store.read_new(&id).expect("shell still tracked");
+    assert!(
+        !status.is_running(),
+        "an aborted drain task must finalize the shell status",
+    );
+}
+
 /// End-to-end: `background: true` returns immediately with a shell id,
 /// registers the shell in the `BackgroundShellStore`, and streams the
 /// command's output into the store's per-shell buffer as it runs.
