@@ -170,6 +170,29 @@ const BREADCRUMB_PITFALL_CHAR_LIMIT: usize = 13_750;
 /// Max results returned by the `search` action.
 const SEARCH_RESULT_LIMIT: usize = 8;
 
+// ── Usage-driven lifecycle (dirge-jyks) ──────────────────────────────
+
+/// How recently an entry must have been expanded to count as "in
+/// active use" for eviction decisions.
+const RECENT_USE_WINDOW_DAYS: i64 = 14;
+
+/// Effective-salience bonus for recently-used entries during
+/// eviction. 0.15 is half a kind-tier step: enough that a consulted
+/// `working` note (0.3 → 0.45) outlives an untouched `episodic` one
+/// (0.45 ties break by age), without letting use alone outrank a
+/// durable `identity` fact.
+const RECENT_USE_BONUS: f64 = 0.15;
+
+/// Salience reinforcement applied on each `expand` — being looked up
+/// IS the relevance signal. Capped at 1.0.
+const USE_REINFORCEMENT: f64 = 0.05;
+
+/// Periodic decay applied by the curator's mechanical pass to
+/// entries older than the stale window with no recent use. Floor at
+/// 0.1 so nothing decays to oblivion silently.
+const DISUSE_DECAY: f64 = 0.05;
+const DECAY_FLOOR: f64 = 0.1;
+
 fn char_limit_for(target: &str) -> usize {
     match target {
         "pitfalls" => DEFAULT_PITFALL_CHAR_LIMIT,
@@ -292,6 +315,7 @@ struct ActiveRow {
     salience: f64,
     status: String,
     tier: String,
+    last_used_at: Option<String>,
 }
 
 /// What a budget compaction did: `demoted` hot entries moved to the
@@ -348,7 +372,8 @@ fn fts_quote(query: &str) -> String {
 }
 
 /// An entry handed to the memory curator: enough to derive age and
-/// identify the entry in audit reports without sidecar bookkeeping.
+/// usage, and to identify the entry in audit reports, without sidecar
+/// bookkeeping.
 pub struct CurationEntry {
     pub target: String,
     pub content: String,
@@ -356,6 +381,10 @@ pub struct CurationEntry {
     /// RFC3339 — when the entry first entered the store (survives
     /// `replace`, unlike the markdown store's content-hash keying).
     pub created_at: String,
+    /// How many times the agent has expanded this entry (dirge-jyks).
+    pub use_count: i64,
+    /// RFC3339 of the most recent expand, if any.
+    pub last_used_at: Option<String>,
 }
 
 /// SQLite-backed memory store for both targets (`memory` +
@@ -515,7 +544,7 @@ impl SqliteMemoryStore {
         extra_where: &str,
     ) -> Result<Vec<ActiveRow>, String> {
         let sql = format!(
-            "SELECT id, uid, kind, content, confidence, salience, status, tier
+            "SELECT id, uid, kind, content, confidence, salience, status, tier, last_used_at
              FROM memories WHERE target = ?1 AND {extra_where} ORDER BY id"
         );
         let mut stmt = conn
@@ -532,6 +561,7 @@ impl SqliteMemoryStore {
                     salience: row.get(5)?,
                     status: row.get(6)?,
                     tier: row.get(7)?,
+                    last_used_at: row.get(8)?,
                 })
             })
             .map_err(|e| format!("Failed to query entries: {e}"))?
@@ -555,13 +585,33 @@ impl SqliteMemoryStore {
     }
 
     /// Index of the entry to evict first under budget pressure: the
-    /// lowest-salience entry, ties broken by age (lowest id = oldest).
+    /// lowest EFFECTIVE salience, ties broken by age (lowest id =
+    /// oldest). dirge-jyks: effective salience folds in recency of
+    /// use — an entry the agent expanded within the last
+    /// [`RECENT_USE_WINDOW_DAYS`] gets [`RECENT_USE_BONUS`], so
+    /// actively-consulted memories outlive equally-salient ones
+    /// nobody has touched.
     fn least_salient_index(rows: &[ActiveRow]) -> usize {
+        let cutoff =
+            (chrono::Utc::now() - chrono::Duration::days(RECENT_USE_WINDOW_DAYS)).to_rfc3339();
+        let effective = |r: &ActiveRow| -> f64 {
+            // RFC3339 UTC timestamps (all written by this module)
+            // compare lexically.
+            let recent = r
+                .last_used_at
+                .as_deref()
+                .map(|t| t > cutoff.as_str())
+                .unwrap_or(false);
+            r.salience + if recent { RECENT_USE_BONUS } else { 0.0 }
+        };
         let mut victim = 0usize;
-        for i in 1..rows.len() {
+        let mut victim_score = effective(&rows[0]);
+        for (i, row) in rows.iter().enumerate().skip(1) {
+            let score = effective(row);
             // Strict `<` keeps the tie-break stable on the oldest row.
-            if rows[i].salience < rows[victim].salience {
+            if score < victim_score {
                 victim = i;
+                victim_score = score;
             }
         }
         victim
@@ -865,10 +915,15 @@ impl SqliteMemoryStore {
             "pitfalls"
         };
 
+        // dirge-jyks: being looked up IS the relevance signal —
+        // reinforce salience alongside the usage counters so eviction
+        // and decay favor what the agent actually consults.
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
-            "UPDATE memories SET use_count = use_count + 1, last_used_at = ?1 WHERE id = ?2",
-            params![now, row.id],
+            "UPDATE memories SET use_count = use_count + 1, last_used_at = ?1,
+                 salience = MIN(1.0, salience + ?2)
+             WHERE id = ?3",
+            params![now, USE_REINFORCEMENT, row.id],
         )
         .map_err(|e| format!("Failed to record usage: {e}"))?;
 
@@ -902,7 +957,7 @@ impl SqliteMemoryStore {
                  FROM memories_fts
                  JOIN memories m ON m.id = memories_fts.rowid
                  WHERE memories_fts MATCH ?1 AND m.status = 'active'
-                 ORDER BY rank LIMIT ?2",
+                 ORDER BY rank, m.salience DESC, m.last_used_at DESC LIMIT ?2",
             )
             .map_err(|e| format!("Failed to prepare search: {e}"))?;
         let results: Vec<serde_json::Value> = stmt
@@ -927,29 +982,7 @@ impl SqliteMemoryStore {
     }
 
     fn tombstoned_rows(conn: &Connection, target: &str) -> Result<Vec<ActiveRow>, String> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, uid, kind, content, confidence, salience, status, tier
-                 FROM memories WHERE target = ?1 AND status = 'tombstoned' ORDER BY id",
-            )
-            .map_err(|e| format!("Failed to prepare query: {e}"))?;
-        let rows = stmt
-            .query_map(params![target], |row| {
-                Ok(ActiveRow {
-                    id: row.get(0)?,
-                    uid: row.get(1)?,
-                    kind: row.get(2)?,
-                    content: row.get(3)?,
-                    confidence: row.get(4)?,
-                    salience: row.get(5)?,
-                    status: row.get(6)?,
-                    tier: row.get(7)?,
-                })
-            })
-            .map_err(|e| format!("Failed to query entries: {e}"))?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(rows)
+        Self::rows_where(conn, target, "status = 'tombstoned'")
     }
 
     /// Tool-facing success/view response. Same JSON shape as the
@@ -1093,15 +1126,16 @@ impl SqliteMemoryStore {
 
     // ── Curator / extractor surface ──────────────────────────────
 
-    /// All active entries with creation timestamps, both targets.
-    /// Feeds the memory curator's stale-candidate pass — `created_at`
-    /// replaces the `.usage.json` first-seen bookkeeping.
+    /// All active entries with creation timestamps and usage signals,
+    /// both targets. Feeds the memory curator's stale-candidate pass —
+    /// `created_at` replaces the `.usage.json` first-seen bookkeeping;
+    /// `use_count`/`last_used_at` come from `expand` (dirge-jyks).
     pub fn entries_for_curation(&self) -> Result<Vec<CurationEntry>, String> {
         let conn = self.conn.lock_ignore_poison();
         let mut stmt = conn
             .prepare(
-                "SELECT target, content, uid, created_at FROM memories
-                 WHERE status = 'active' ORDER BY id",
+                "SELECT target, content, uid, created_at, use_count, last_used_at
+                 FROM memories WHERE status = 'active' ORDER BY id",
             )
             .map_err(|e| format!("Failed to prepare curation query: {e}"))?;
         let rows = stmt
@@ -1111,12 +1145,53 @@ impl SqliteMemoryStore {
                     content: row.get(1)?,
                     uid: row.get(2)?,
                     created_at: row.get(3)?,
+                    use_count: row.get(4)?,
+                    last_used_at: row.get(5)?,
                 })
             })
             .map_err(|e| format!("Failed to query curation entries: {e}"))?
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
+    }
+
+    /// Apply disuse decay (dirge-jyks): active entries past the
+    /// cutoff age that haven't been expanded since the cutoff lose
+    /// [`DISUSE_DECAY`] salience, floored at [`DECAY_FLOOR`]. Run by
+    /// the curator's mechanical pass so decay accrues per curation
+    /// cycle, not per session. Returns how many entries decayed.
+    pub fn apply_disuse_decay(&self, cutoff_days: i64) -> Result<usize, String> {
+        let cutoff = (chrono::Utc::now() - chrono::Duration::days(cutoff_days)).to_rfc3339();
+        let conn = self.conn.lock_ignore_poison();
+        let changed = conn
+            .execute(
+                "UPDATE memories
+                 SET salience = MAX(?1, salience - ?2)
+                 WHERE status = 'active'
+                   AND created_at < ?3
+                   AND (last_used_at IS NULL OR last_used_at < ?3)
+                   AND salience > ?1",
+                params![DECAY_FLOOR, DISUSE_DECAY, cutoff],
+            )
+            .map_err(|e| format!("Failed to apply disuse decay: {e}"))?;
+        Ok(changed)
+    }
+
+    /// Hot-tier budget utilization (%) for a target — the curator's
+    /// budget-pressure signal (dirge-jyks).
+    pub fn hot_usage_pct(&self, target: &str) -> u32 {
+        let conn = self.conn.lock_ignore_poison();
+        let rows = match Self::hot_rows(&conn, target) {
+            Ok(r) => r,
+            Err(_) => return 0,
+        };
+        let current: usize = rows.iter().map(|r| r.content.len()).sum::<usize>()
+            + rows.len().saturating_sub(1) * ENTRY_DELIMITER.len();
+        let limit = char_limit_for(target);
+        if limit == 0 {
+            return 0;
+        }
+        ((current as f64 / limit as f64) * 100.0).min(100.0) as u32
     }
 
     /// Live entries of one target rendered as delimiter-joined text —
@@ -2447,6 +2522,112 @@ mod tests {
             crumb_chars as usize <= BREADCRUMB_MEMORY_CHAR_LIMIT,
             "breadcrumb tier stays within budget: {crumb_chars}"
         );
+    }
+
+    // ── Usage-driven lifecycle (dirge-jyks) ──────────────────────
+
+    #[test]
+    fn expand_reinforces_salience() {
+        let (paths, _dir) = temp_project();
+        let store = SqliteMemoryStore::load(&paths).unwrap();
+        store.add_entry("memory", "useful fact", None).unwrap();
+        store.expand_entry("useful fact").unwrap();
+        let conn = raw_conn(&paths);
+        let salience: f64 = conn
+            .query_row(
+                "SELECT salience FROM memories WHERE content = 'useful fact'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            (salience - 0.55).abs() < 1e-9,
+            "0.5 default + 0.05 reinforcement: {salience}"
+        );
+    }
+
+    /// Recency of use protects an entry from eviction: at equal
+    /// salience, the demotion victim is the one nobody has expanded —
+    /// even when it's newer.
+    #[test]
+    fn eviction_spares_recently_used_entries() {
+        let (paths, _dir) = temp_project();
+        let store = SqliteMemoryStore::load(&paths).unwrap();
+        let used = format!("used {}", "a".repeat(1000));
+        let untouched = format!("untouched {}", "b".repeat(1000));
+        store.add_entry("memory", &used, None).unwrap();
+        store.add_entry("memory", &untouched, None).unwrap();
+        // Mark the OLDER entry as recently used without touching
+        // salience (isolates the recency bonus from reinforcement).
+        let conn = raw_conn(&paths);
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE memories SET last_used_at = ?1 WHERE content LIKE 'used %'",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        drop(conn);
+
+        let outcome = store
+            .add_entry("memory", &format!("third {}", "c".repeat(400)), None)
+            .unwrap();
+        assert_eq!(outcome.demoted, 1);
+        let view = store.view("memory");
+        let entries: Vec<String> = view["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e.as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            entries.iter().any(|e| e.starts_with("used")),
+            "recently-used entry must survive: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|e| e.starts_with("untouched")),
+            "never-used entry is the victim despite being newer: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn disuse_decay_floors_and_spares_recent() {
+        let (paths, _dir) = temp_project();
+        let store = SqliteMemoryStore::load(&paths).unwrap();
+        store.add_entry("memory", "ancient fact", None).unwrap();
+        store.add_entry("memory", "fresh fact", None).unwrap();
+        // Backdate creation; floor check via repeated decay.
+        let conn = raw_conn(&paths);
+        let then = (chrono::Utc::now() - chrono::Duration::days(90)).to_rfc3339();
+        conn.execute(
+            "UPDATE memories SET created_at = ?1 WHERE content = 'ancient fact'",
+            rusqlite::params![then],
+        )
+        .unwrap();
+        drop(conn);
+
+        for _ in 0..12 {
+            store.apply_disuse_decay(30).unwrap();
+        }
+        let conn = raw_conn(&paths);
+        let (ancient, fresh): (f64, f64) = (
+            conn.query_row(
+                "SELECT salience FROM memories WHERE content = 'ancient fact'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap(),
+            conn.query_row(
+                "SELECT salience FROM memories WHERE content = 'fresh fact'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap(),
+        );
+        assert!(
+            (ancient - 0.1).abs() < 1e-9,
+            "decay floors at 0.1: {ancient}"
+        );
+        assert!((fresh - 0.5).abs() < 1e-9, "fresh entry untouched: {fresh}");
     }
 
     #[test]
