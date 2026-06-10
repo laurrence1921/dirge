@@ -90,6 +90,70 @@ fn schema_v8_drops_the_stale_fts_delete_trigger() {
     assert_eq!(trigram, 1, "the correct trigram delete trigger stays");
 }
 
+/// dirge-lerb: v9 drops the dead `memories.confidence` column. A
+/// fresh DB ends up without it, and a DB that already has it (created
+/// at v7/v8 with rows) migrates cleanly, keeping its rows.
+#[test]
+fn schema_v9_drops_confidence_column() {
+    // Fresh DB: confidence absent.
+    let (db, _dir) = temp_db();
+    let present: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = 'confidence'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(present, 0, "fresh DB must not have a confidence column");
+
+    // Simulate a pre-v9 DB: a memories table WITH confidence + a row,
+    // user_version pinned to 8, then reopen so migrate() runs v9.
+    let n = DB_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("dirge-v9-migrate-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT NOT NULL UNIQUE,
+                 target TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'procedural',
+                 content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+                 tier TEXT NOT NULL DEFAULT 'hot', confidence REAL NOT NULL DEFAULT 0.6,
+                 salience REAL NOT NULL DEFAULT 0.5, created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL, last_used_at TEXT,
+                 use_count INTEGER NOT NULL DEFAULT 0, superseded_by TEXT
+             );
+             INSERT INTO memories (uid, target, content, created_at, updated_at)
+                 VALUES ('urn:ump:keep', 'memory', 'survives the drop', 'x', 'x');
+             PRAGMA user_version = 8;",
+        )
+        .unwrap();
+    }
+    let db = SessionDb::open(&path).unwrap();
+    let present: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = 'confidence'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(present, 0, "v9 must drop confidence on a pre-v9 DB");
+    let kept: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE uid = 'urn:ump:keep'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, 1, "existing rows survive the column drop");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// dirge-slj2: the safe delete path. delete_session_messages must
 /// recompute each row's exact indexed projection (redacted +
 /// concatenated, same as insert_message) for the FTS5 'delete'

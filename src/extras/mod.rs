@@ -10,7 +10,6 @@ pub mod mcp;
 #[cfg(feature = "acp")]
 pub mod acp;
 
-pub mod cross_session_extractor;
 pub mod curator_clock;
 pub mod dirge_paths;
 pub mod fts;

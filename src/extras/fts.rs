@@ -1,10 +1,9 @@
 //! Shared FTS5 query handling (dirge-fmuu).
 //!
-//! Three call sites used to carry independent sanitizers with three
-//! different threat models — a syntax hazard fixed in one stayed open
-//! in the others (the bare-apostrophe FTS5 error already happened
-//! once, in the cross-session seed themes). All FTS5-syntax knowledge
-//! now lives here. Pick by input shape:
+//! Call sites used to carry independent sanitizers with different
+//! threat models — a syntax hazard fixed in one stayed open in the
+//! others (the bare-apostrophe FTS5 error already happened once). All
+//! FTS5-syntax knowledge now lives here. Pick by input shape:
 //!
 //! - [`sanitize_query`] — free-form USER queries where FTS5 operators
 //!   and quoted phrases should keep working (session search). Most
@@ -12,12 +11,6 @@
 //! - [`quote_terms`] — arbitrary model/program text that should match
 //!   as plain words, ANDed. Every token is quoted, so no input can be
 //!   a syntax error (memory search).
-//! - [`or_query`] — fixed seed-term lists OR-joined for candidate
-//!   surfacing (cross-session extractor). Deliberately strict: terms
-//!   must be plain alphanumerics; anything else is dropped rather
-//!   than quoted, because seed lists are compile-time constants and a
-//!   non-alphanumeric term there is a programming error to surface,
-//!   not user input to accommodate.
 
 use regex::Regex;
 use std::sync::LazyLock;
@@ -115,22 +108,6 @@ pub(crate) fn quote_terms(query: &str) -> String {
         .join(" ")
 }
 
-/// Build an OR-query from plain seed terms. Each term is kept only if
-/// it is purely ASCII-alphanumeric — anything else (apostrophes,
-/// quotes, parens) is DROPPED, not quoted: seed lists are
-/// compile-time constants, and a non-alphanumeric term there is a
-/// programming error this strictness surfaces (the `don't` seed term
-/// silently broke a whole theme once — dirge-6js7). Returns "" when
-/// no term survives (callers skip the query).
-pub(crate) fn or_query(terms: &[&str]) -> String {
-    let safe: Vec<&str> = terms
-        .iter()
-        .copied()
-        .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric()))
-        .collect();
-    safe.join(" OR ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,16 +167,5 @@ mod tests {
         assert_eq!(quote_terms("don't"), "\"don't\"");
         assert_eq!(quote_terms("a \"b\" c"), "\"a\" \"b\" \"c\"");
         assert_eq!(quote_terms("   "), "");
-    }
-
-    // ── or_query (moved from cross_session_extractor) ────────────
-
-    #[test]
-    fn or_query_joins_and_drops_unsafe_terms() {
-        assert_eq!(or_query(&["build", "cargo"]), "build OR cargo");
-        // Non-alphanumeric terms are dropped so the query can never
-        // be an FTS5 syntax error.
-        assert_eq!(or_query(&["don't", "prefer", "(stop)"]), "prefer");
-        assert_eq!(or_query(&["don't", "a-b"]), "");
     }
 }

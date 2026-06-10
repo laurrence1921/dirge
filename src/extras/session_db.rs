@@ -22,7 +22,7 @@ use regex::Regex;
 // Used in migrate() to set user_version pragma. pub(crate) so tests
 // assert against the constant instead of a hardcoded number that
 // breaks on every migration.
-pub(crate) const SCHEMA_VERSION: u32 = 8;
+pub(crate) const SCHEMA_VERSION: u32 = 9;
 
 /// Thread-safe snapshot of the most recent `SessionDb::open()` failure.
 /// Port of Hermes's `_last_init_error` (hermes_state.py:66-67).
@@ -295,6 +295,10 @@ impl SessionDb {
 
         if current < 8 {
             self.run_migration_v8()?;
+        }
+
+        if current < 9 {
+            self.run_migration_v9()?;
         }
 
         self.conn
@@ -686,6 +690,26 @@ impl SessionDb {
         self.conn
             .execute_batch("DROP TRIGGER IF EXISTS messages_ad;")
             .map_err(|e| format!("Migration v8 failed: {e}"))?;
+        Ok(())
+    }
+
+    /// v9 (dirge-lerb): drop the `memories.confidence` column. It was
+    /// write-only — set to a constant default on insert and echoed in
+    /// the tool's view response, but never read by eviction, search,
+    /// or curation. The column isn't indexed and has no trigger/view
+    /// dependency, so a plain DROP COLUMN is safe. `IF EXISTS`-style
+    /// guard via a pre-check so a partially-migrated DB doesn't error.
+    fn run_migration_v9(&self) -> Result<(), String> {
+        let has_confidence: bool = self
+            .conn
+            .prepare("SELECT 1 FROM pragma_table_info('memories') WHERE name = 'confidence'")
+            .and_then(|mut s| s.exists([]))
+            .unwrap_or(false);
+        if has_confidence {
+            self.conn
+                .execute_batch("ALTER TABLE memories DROP COLUMN confidence;")
+                .map_err(|e| format!("Migration v9 failed: {e}"))?;
+        }
         Ok(())
     }
 

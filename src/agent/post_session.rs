@@ -24,13 +24,14 @@
 //! - at most one forked LLM runner is being drained at any
 //!   instant, so the passes never compete for rate limits / cache.
 //!
-//! The stage list is now four passes (dirge-6js7 added the last):
-//!   1. background review     — current-session capture
-//!   2. skills curator        — consolidate skills
-//!   3. memory curator        — consolidate MEMORY.md
-//!   4. cross-session extract — promote sub-threshold patterns
-//!      recurring across past sessions (runs last so the current
-//!      session is already captured + consolidated).
+//! The stage list is three passes:
+//!   1. background review — current-session capture
+//!   2. skills curator    — consolidate skills
+//!   3. memory curator    — consolidate memory
+//!
+//! (A cross-session extraction stage was removed in dirge-pfp2: it
+//! re-derived durable facts that per-session background review already
+//! captures, for the cost of an extra LLM pass.)
 //!
 //! Each stage is bounded by [`STAGE_TIMEOUT`] so a hung provider
 //! call abandons that stage rather than stranding the rest of the
@@ -103,18 +104,9 @@ type Stage = (&'static str, Pin<Box<dyn Future<Output = ()> + Send>>);
 /// spawns ONE detached task and returns immediately. Inside that
 /// task the passes run strictly in order.
 ///
-/// `session_id` is the just-ended session's id — the cross-session
-/// extraction stage excludes it (background review already handled
-/// it) when scanning prior sessions.
-///
 /// Replaces the three independent `spawn_*` calls that used to
 /// live in `done.rs`.
-pub fn spawn_post_session(
-    agent: AnyAgent,
-    paths: ProjectPaths,
-    transcript: String,
-    session_id: String,
-) {
+pub fn spawn_post_session(agent: AnyAgent, paths: ProjectPaths, transcript: String) {
     tokio::spawn(async move {
         // dirge-ba0m: at most one orchestrator in flight per
         // process. A second idle Done while this one is still
@@ -151,17 +143,6 @@ pub fn spawn_post_session(
             (
                 "memory-curator",
                 Box::pin(stage_memory_curator(agent.clone(), paths.clone())),
-            ),
-            // dirge-6js7: cross-session extraction runs LAST — after
-            // the current session's facts are captured (review) and
-            // consolidated (curators), minimizing duplicate adds.
-            (
-                "cross-session",
-                Box::pin(stage_cross_session(
-                    agent.clone(),
-                    paths.clone(),
-                    session_id,
-                )),
             ),
         ];
         run_stages_sequentially(stages, STAGE_TIMEOUT).await;
@@ -279,53 +260,6 @@ async fn stage_memory_curator(agent: AnyAgent, paths: ProjectPaths) {
 
     if let Some(report) = mechanical_report {
         crate::agent::review::run_memory_curator_review(agent, paths, report).await;
-    }
-}
-
-/// Stage 4 (cross-session extraction, dirge-6js7): run the
-/// mechanical FTS scan (off-thread) over prior sessions; if it
-/// surfaces recurring (≥2-session) themes absent from MEMORY.md,
-/// run the LLM extraction pass. Gated by its own 14-day interval +
-/// new-session watermark; most Dones short-circuit in the scan.
-async fn stage_cross_session(agent: AnyAgent, paths: ProjectPaths, session_id: String) {
-    let paths_for_blocking = paths.clone();
-    let bundle =
-        tokio::task::spawn_blocking(move || {
-            let mut extractor =
-                match crate::extras::cross_session_extractor::CrossSessionExtractor::new(
-                    &paths_for_blocking,
-                ) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        tracing::debug!(
-                            target: "dirge::cross_session",
-                            error = %e,
-                            "Failed to construct cross-session extractor — skipping",
-                        );
-                        return None;
-                    }
-                };
-            if !extractor.should_run_now() {
-                return None;
-            }
-            match extractor.run_mechanical_scan(&session_id) {
-                Ok(bundle) => bundle,
-                Err(e) => {
-                    tracing::warn!(
-                        target: "dirge::cross_session",
-                        error = %e,
-                        "cross-session mechanical scan failed",
-                    );
-                    None
-                }
-            }
-        })
-        .await
-        .ok()
-        .flatten();
-
-    if let Some(bundle) = bundle {
-        crate::agent::review::run_cross_session_extraction(agent, paths, bundle).await;
     }
 }
 

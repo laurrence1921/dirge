@@ -1,12 +1,12 @@
 //! Shared scheduler state + run gates for the background curators
 //! (dirge-rwrg).
 //!
-//! The skills curator, memory curator, and cross-session extractor
-//! each carried a copy-pasted state struct, load/save, and interval
-//! gate — and the copies had diverged: skills and cross-session kept
-//! the old "seed the clock and defer one full interval" first-run
-//! protocol while the memory curator had moved to a session-count
-//! gate (dirge-jyks). One clock now owns the policy for all three:
+//! The skills curator and memory curator each carried a copy-pasted
+//! state struct, load/save, and interval gate — and the copies had
+//! diverged: skills kept the old "seed the clock and defer one full
+//! interval" first-run protocol while the memory curator had moved to
+//! a session-count gate (dirge-jyks). One clock now owns the policy
+//! for both:
 //!
 //! - FIRST run: gated on accumulated sessions
 //!   ([`DEFAULT_MIN_SESSIONS_FIRST_RUN`]), not the calendar. Memory
@@ -18,9 +18,9 @@
 //! - AFTER: a fixed per-curator interval between runs.
 //!
 //! On-disk format is unchanged: the same `{last_run, first_check}`
-//! JSON the three structs wrote (plus the cross-session extractor's
-//! `last_scanned_watermark`, serialized only when non-empty so the
-//! other two state files keep their exact shape).
+//! JSON the legacy structs wrote. Older files carrying a dropped
+//! `last_scanned_watermark` field (from the removed cross-session
+//! extractor) still load — serde ignores unknown fields.
 
 use std::path::{Path, PathBuf};
 
@@ -39,11 +39,6 @@ pub(crate) struct ClockState {
     pub last_run: Option<u64>,
     /// Timestamp when the state was first seeded.
     pub first_check: u64,
-    /// Cross-session extractor only: RFC3339 `last_active` of the
-    /// newest session already scanned. Skipped when empty so the
-    /// skills/memory state files keep their legacy shape.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub last_scanned_watermark: String,
 }
 
 /// One curator's scheduler clock: state file + run gates.
@@ -78,7 +73,6 @@ impl CuratorClock {
             return Ok(ClockState {
                 last_run: None,
                 first_check: now_secs(),
-                last_scanned_watermark: String::new(),
             });
         }
         let content =
@@ -116,16 +110,6 @@ impl CuratorClock {
     #[allow(dead_code)]
     pub fn last_run(&self) -> Option<u64> {
         self.state.last_run
-    }
-
-    /// Cross-session extractor's scan watermark.
-    pub fn watermark(&self) -> &str {
-        &self.state.last_scanned_watermark
-    }
-
-    /// Set the scan watermark in memory; persist with `save`/`mark_ran`.
-    pub fn set_watermark(&mut self, watermark: String) {
-        self.state.last_scanned_watermark = watermark;
     }
 
     /// Best-effort session count from the project DB. 0 when the DB
@@ -215,35 +199,29 @@ mod tests {
     }
 
     /// State files written by the legacy structs (`{last_run,
-    /// first_check}`) load unchanged, and the watermark only appears
-    /// on disk when set.
+    /// first_check}`) load unchanged. Old files carrying the dropped
+    /// `last_scanned_watermark` field still deserialize (serde ignores
+    /// unknown fields).
     #[test]
-    fn legacy_state_files_load_and_watermark_is_optional() {
+    fn legacy_state_files_load() {
         let (paths, _dir) = temp_project();
         let path = paths.dirge_dir().join(".test_clock_state");
         std::fs::create_dir_all(paths.dirge_dir()).unwrap();
         std::fs::write(
             &path,
-            r#"{"last_run": 1234567890, "first_check": 1234567800}"#,
+            r#"{"last_run": 1234567890, "first_check": 1234567800, "last_scanned_watermark": "2026-05-03T10:00:00Z"}"#,
         )
         .unwrap();
 
-        let mut c = CuratorClock::new(&paths, path.clone(), 168, 10).unwrap();
+        let c = CuratorClock::new(&paths, path.clone(), 168, 10).unwrap();
         assert_eq!(c.last_run(), Some(1234567890));
-        assert_eq!(c.watermark(), "");
 
-        // Saving without a watermark keeps the legacy shape.
+        // Re-saving drops the obsolete field.
         c.save().unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(
             !raw.contains("last_scanned_watermark"),
-            "empty watermark must not appear on disk: {raw}"
+            "obsolete field must not be re-written: {raw}"
         );
-
-        // With a watermark, it round-trips.
-        c.set_watermark("2026-05-03T10:00:00Z".to_string());
-        c.save().unwrap();
-        let c = CuratorClock::new(&paths, path, 168, 10).unwrap();
-        assert_eq!(c.watermark(), "2026-05-03T10:00:00Z");
     }
 }

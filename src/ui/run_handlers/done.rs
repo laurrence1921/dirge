@@ -576,12 +576,7 @@ pub(crate) async fn handle_done(
         // the review creates is flushed before the curator reads
         // it, and the three LLM runners never fire concurrently.
         // Still fire-and-forget — the user's turn never waits.
-        crate::agent::post_session::spawn_post_session(
-            agent.clone(),
-            paths,
-            transcript,
-            ctx.session.id.to_string(),
-        );
+        crate::agent::post_session::spawn_post_session(agent.clone(), paths, transcript);
     }
 
     // (dirge-2qke / dirge-72ea) The post-merge cwd restore that used to

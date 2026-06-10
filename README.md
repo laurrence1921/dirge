@@ -12,7 +12,7 @@ What sets dirge apart from other agentic editors:
 - **Built to keep weaker/cheaper models on the rails.** A [robust agent loop](docs/features.md#robust-agent-loop) repairs malformed tool calls, validates every write through tree-sitter *before* it touches disk, escalates to a stronger model on repeated failure, and trips circuit breakers on non-progressing loops.
 - **One explainable permission engine.** All authorization flows through a single Policy Decision Point with four modes, op-based rules, session allowlists, and a `/why` command that traces exactly which policy decided and why. See [docs/permissions.md](docs/permissions.md).
 - **Role-based multi-provider routing.** Point the main loop, review, escalation, summarization, and subagent roles at different models — mix DeepSeek, GLM, Anthropic, OpenAI, Ollama, and any OpenAI-compatible endpoint in one session. Define your own opt-in [agent profiles](docs/agents.md) (a named model + prompt + tool-policy bundle) and switch personas mid-session with `/agent`.
-- **Self-improving project memory.** Persistent per-project memory plus a post-session orchestrator that extracts learnings, curates memory + skills, and promotes patterns recurring across sessions.
+- **Self-improving project memory.** Persistent per-project memory plus a post-session orchestrator that extracts learnings and curates memory + skills.
 - **Code intelligence baked in.** Tree-sitter [semantic tools](docs/semantic.md) and [LSP diagnostics](docs/lsp.md) for 10+ languages, surfaced inline so the agent fixes compile errors on the same turn.
 - **Extensible at runtime.** A [Janet plugin system](docs/plugins.md) hooks the full lifecycle, and [Claude-compatible skills](docs/skills.md) load instructions on demand.
 
