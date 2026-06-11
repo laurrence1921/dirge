@@ -6,6 +6,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-06-10
+
+### Fixed
+- **Tool chambers are restored when a session is reloaded.** The scrollback
+  replay (`/sessions` switch, `-c`/`--session` resume, `/fork`) rendered only
+  message prose and dropped every persisted tool call, so reloading a session
+  lost all its edits/bash/reads from the visible transcript and showed
+  pure-tool-call turns as a bare handle. Each call is now reconstructed as a
+  chamber, matching the live view. (Data was never lost — the model always
+  re-saw the calls; this was a display gap.)
+- **Idle scroll no longer stalls.** The render loop's 8ms paint throttle could
+  drop the final frame of a fast wheel/trackpad scroll, and with the agent
+  idle there was no timer to repaint it — so the scrolled position sat
+  unpainted until the next event. A pending dirty frame now repaints just past
+  the throttle window even when idle.
+
+### Changed
+- Mouse-wheel scrolling over the chat moves 3 lines per tick (was 1), matching
+  the side panel.
+- On interactive exit, dirge prints a dark-gray hint —
+  `Resume this session with: dirge --session <id>` — so it's easy to pick the
+  session back up (skipped for `--no-session` / empty sessions).
+
 ## [0.5.1] - 2026-06-10
 
 ### Fixed
