@@ -302,6 +302,35 @@ mod tests {
         assert_eq!(resolved2.id, tip.id);
     }
 
+    /// A folded conversation collapses to its tip in a listing: the
+    /// newest member of each origin survives, standalone sessions are
+    /// untouched, and ordering is preserved.
+    #[test]
+    fn dedup_by_origin_keeps_tip_per_conversation() {
+        use crate::session::Session;
+        let mk = |id: &str, origin: Option<&str>, updated: &str| {
+            let mut s = Session::new("p", "m", 0);
+            s.id = compact_str::CompactString::new(id);
+            s.origin_id = origin.map(compact_str::CompactString::new);
+            s.updated_at = compact_str::CompactString::new(updated);
+            s
+        };
+        // Newest-first input, as callers pass it. Chain "conv": tip then
+        // its stale older rotation. Plus a standalone session.
+        let input = vec![
+            mk("compacted-tip", Some("conv"), "2026-06-01T00:00:00+00:00"),
+            mk("standalone", None, "2026-05-01T00:00:00+00:00"),
+            mk("conv", None, "2026-01-01T00:00:00+00:00"), // origin == its own id
+        ];
+        let out = dedup_by_origin(input);
+        let ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["compacted-tip", "standalone"],
+            "the chain collapses to its tip; standalone stays"
+        );
+    }
+
     #[test]
     fn validate_session_id_accepts_uuids() {
         assert!(validate_session_id("a1b2c3d4-e5f6-7890-abcd-ef1234567890").is_ok());
@@ -910,6 +939,19 @@ mod tests {
     }
 }
 
+/// Collapse fold chains to one entry per conversation: keep only the
+/// first session seen for each [`Session::effective_origin`]. Callers
+/// pass a newest-first list, so the survivor is the chain tip and the
+/// stale older rotations drop out — the session list shows a folded
+/// conversation once, not once per rotation. Pure for testability.
+fn dedup_by_origin(sessions: Vec<Session>) -> Vec<Session> {
+    let mut seen = std::collections::HashSet::new();
+    sessions
+        .into_iter()
+        .filter(|s| seen.insert(s.effective_origin().to_string()))
+        .collect()
+}
+
 /// Resume helper: resolve `id` to the TIP of its fold chain. A compaction
 /// fold rotates the session id and leaves the older file behind unchanged
 /// (pre-fold state), so resuming *any* member of a chain must hop to the
@@ -969,7 +1011,9 @@ pub fn find_sessions_by_prefix(prefix: &str) -> anyhow::Result<Vec<Session>> {
         }
     }
     sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(sessions)
+    // Collapse fold chains so a prefix that spans a rotated conversation
+    // returns the single tip, not every rotation.
+    Ok(dedup_by_origin(sessions))
 }
 
 pub fn find_recent_sessions(limit: usize) -> anyhow::Result<Vec<Session>> {
@@ -1013,7 +1057,12 @@ pub fn find_recent_sessions(limit: usize) -> anyhow::Result<Vec<Session>> {
     // proxy but `updated_at` is canonical. Cheap on the already-
     // truncated list.
     sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(sessions)
+    // Show one row per conversation: a just-folded chain can have both
+    // its tip and a recent older rotation inside the window; keep the
+    // tip. Stale rotations from older folds already sink below the
+    // window by mtime. (A chain occupying the window can yield slightly
+    // fewer than `limit` rows — acceptable for a recents list.)
+    Ok(dedup_by_origin(sessions))
 }
 
 pub fn agents_path() -> PathBuf {
