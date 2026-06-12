@@ -265,6 +265,43 @@ mod tests {
         );
     }
 
+    /// Resuming any member of a fold chain resolves to the live tip —
+    /// the newest session sharing the origin — not the stale older file
+    /// the fold left behind. A unique origin keeps the shared test data
+    /// dir's scan from colliding with other tests' sessions.
+    #[test]
+    fn load_session_tip_resolves_to_newest_in_chain() {
+        use crate::session::{MessageRole, Session};
+        let origin = format!("origin-{}", uuid::Uuid::new_v4().simple());
+
+        // Original session: its own origin (origin_id None), older.
+        let mut old = Session::new("p", "m", 128_000);
+        old.id = compact_str::CompactString::new(origin.clone());
+        old.add_message(MessageRole::User, "the original ask");
+        old.updated_at = compact_str::CompactString::new("2026-01-01T00:00:00+00:00");
+        save_session(&mut old).unwrap();
+
+        // Rotated tip: shares the origin, newer.
+        let mut tip = Session::new("p", "m", 128_000);
+        tip.id =
+            compact_str::CompactString::new(format!("compacted-{}", uuid::Uuid::new_v4().simple()));
+        tip.origin_id = Some(compact_str::CompactString::new(origin.clone()));
+        tip.add_message(MessageRole::User, "newer state");
+        tip.updated_at = compact_str::CompactString::new("2026-06-01T00:00:00+00:00");
+        save_session(&mut tip).unwrap();
+
+        // Resuming the ORIGINAL id hops forward to the tip.
+        let resolved = load_session_tip(&origin).unwrap();
+        assert_eq!(
+            resolved.id, tip.id,
+            "resuming the original id must land on the chain tip"
+        );
+
+        // Resuming the tip id stays on the tip.
+        let resolved2 = load_session_tip(tip.id.as_str()).unwrap();
+        assert_eq!(resolved2.id, tip.id);
+    }
+
     #[test]
     fn validate_session_id_accepts_uuids() {
         assert!(validate_session_id("a1b2c3d4-e5f6-7890-abcd-ef1234567890").is_ok());
@@ -871,6 +908,38 @@ mod tests {
             "alternative approach..."
         );
     }
+}
+
+/// Resume helper: resolve `id` to the TIP of its fold chain. A compaction
+/// fold rotates the session id and leaves the older file behind unchanged
+/// (pre-fold state), so resuming *any* member of a chain must hop to the
+/// newest session that shares the same [`Session::effective_origin`] —
+/// otherwise resume silently loads a stale snapshot. Falls back to the
+/// directly-loaded session when nothing newer shares its origin (the
+/// common case: the user already named the tip, or the session never
+/// folded). Filtering by origin makes the directory scan robust to
+/// unrelated sessions.
+pub fn load_session_tip(id: &str) -> anyhow::Result<Session> {
+    let requested = load_session(id)?;
+    let origin = requested.effective_origin().to_string();
+    let dir = session_dir();
+    if !dir.exists() {
+        return Ok(requested);
+    }
+    let mut tip = requested;
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "json")
+            && let Ok(json) = std::fs::read_to_string(&path)
+            && let Ok(s) = serde_json::from_str::<Session>(&json)
+            && s.effective_origin() == origin
+            && s.updated_at > tip.updated_at
+        {
+            tip = s;
+        }
+    }
+    Ok(tip)
 }
 
 pub fn find_sessions_by_prefix(prefix: &str) -> anyhow::Result<Vec<Session>> {

@@ -16,6 +16,10 @@ pub(crate) async fn cmd_sessions_switch(
             .write_line(&format!("no session matching '{}'", prefix), c_agent())?;
     } else if sessions.len() == 1 {
         if let Some(s) = sessions.into_iter().next() {
+            // Resolve to the chain tip so resuming a folded conversation
+            // by prefix lands on the live state, not the stale pre-fold
+            // file the rotation left behind.
+            let s = crate::session::storage::load_session_tip(&s.id).unwrap_or(s);
             let msg_count = s.messages.len();
             if let Some(store) = ctx.bg_store.as_ref() {
                 store.cancel_all();

@@ -648,7 +648,10 @@ async fn main() -> anyhow::Result<()> {
         // Try exact id first; fall back to prefix match so the CLI
         // is as forgiving as the interactive `/sessions <prefix>`
         // command. Ambiguous prefix surfaces a list of matching ids.
-        match session::storage::load_session(session_id) {
+        // Resolve to the chain tip: a folded session rotates its id and
+        // leaves the older file behind, so resuming by the id the user
+        // started with must hop forward to the live state.
+        match session::storage::load_session_tip(session_id) {
             Ok(s) => session = s,
             Err(_) => {
                 let matches = session::storage::find_sessions_by_prefix(session_id)?;
@@ -662,7 +665,13 @@ async fn main() -> anyhow::Result<()> {
                         session::storage::validate_session_id(session_id)?;
                         session.id = CompactString::new(session_id);
                     }
-                    1 => session = matches.into_iter().next().expect("len == 1"),
+                    // Prefix matched one session — resolve it to its chain
+                    // tip too, so a prefix of a folded conversation still
+                    // lands on the live state.
+                    1 => {
+                        let m = matches.into_iter().next().expect("len == 1");
+                        session = session::storage::load_session_tip(&m.id).unwrap_or(m);
+                    }
                     n => {
                         let ids: Vec<String> =
                             matches.iter().take(5).map(|s| s.id.to_string()).collect();
