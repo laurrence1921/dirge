@@ -133,6 +133,12 @@ impl EventBridge {
                 }]
             }
 
+            LoopEvent::CheckpointRefresh { summary } => {
+                vec![AgentEvent::CheckpointRefresh {
+                    summary: CompactString::new(summary),
+                }]
+            }
+
             LoopEvent::RetryNotice {
                 attempt,
                 delay_ms,

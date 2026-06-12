@@ -373,6 +373,32 @@ fn record_compaction_outcome(failures: &mut u32, outcome: SummaryOutcome) {
     }
 }
 
+/// Spawn a background incremental checkpoint: summarize a snapshot of the
+/// current context off the loop and emit [`LoopEvent::CheckpointRefresh`]
+/// so the consumer persists it to the durable checkpoint WITHOUT folding.
+/// Best-effort — a summarizer error or invalid summary is silently dropped
+/// (the next threshold, or the eventual destructive fold, will write one).
+/// Mirrors MiMo's background checkpoint writer.
+fn spawn_incremental_checkpoint(
+    sfn: crate::agent::compression::SummarizeFn,
+    messages: Vec<serde_json::Value>,
+    emit: mpsc::Sender<LoopEvent>,
+) {
+    tokio::spawn(async move {
+        use crate::agent::compression;
+        if messages.is_empty() {
+            return;
+        }
+        let budget = compression::summary_budget(compression::estimate_messages_tokens(&messages));
+        let prompt = compression::build_summary_prompt(&messages, budget, None, None);
+        if let Ok(summary) = sfn(prompt).await
+            && compression::validate_summary(&summary)
+        {
+            let _ = emit.send(LoopEvent::CheckpointRefresh { summary }).await;
+        }
+    });
+}
+
 async fn run_compaction_pass(
     current_context: &mut Context,
     summarize_fn: &Option<crate::agent::compression::SummarizeFn>,
@@ -826,6 +852,11 @@ pub async fn run_loop(
     // Goal gate: counts re-entries so a user-defined stop condition that
     // never resolves can't loop past MAX_GOAL_REACT.
     let mut goal_reacts: u8 = 0;
+
+    // Incremental background checkpoint schedule (MiMo 20% cadence).
+    // Lazily built on first post-usage check with the live ctx_max; reset
+    // after a destructive fold rebuilds the context.
+    let mut checkpoint_schedule: Option<context_manager::CheckpointSchedule> = None;
 
     // vix-port: don't let the model end a turn while it still has unfinished
     // todos (bounded by MAX_TODO_NUDGES; vix caps at 3, session.go:1551).
@@ -1315,6 +1346,33 @@ pub async fn run_loop(
                         }
                     }
                     _ => {}
+                }
+                // Incremental background checkpoint (MiMo 20% cadence):
+                // when NOT folding, refresh the durable checkpoint at each
+                // newly-crossed usage threshold so a later resume/overflow
+                // recovers a fresh state. Non-destructive — the summary is
+                // generated off the loop and written by the consumer
+                // without touching the live context. A destructive fold
+                // re-arms the schedule (the context was rebuilt).
+                if context_manager::incremental_checkpoint_enabled()
+                    && let Some(sfn) = &summarize_fn
+                {
+                    let sched = checkpoint_schedule
+                        .get_or_insert_with(|| context_manager::CheckpointSchedule::new(ctx_max));
+                    match decision.kind {
+                        PostUsageDecisionKind::Fold | PostUsageDecisionKind::ExitWithSummary => {
+                            sched.reset()
+                        }
+                        PostUsageDecisionKind::None => {
+                            if sched.is_enabled() && sched.note_usage(decision.ratio) {
+                                spawn_incremental_checkpoint(
+                                    sfn.clone(),
+                                    current_context.messages.clone(),
+                                    emit.clone(),
+                                );
+                            }
+                        }
+                    }
                 }
                 // Snip credit is per-iteration: it informed THIS post-usage
                 // decision; clear it so a later iteration's fold isn't

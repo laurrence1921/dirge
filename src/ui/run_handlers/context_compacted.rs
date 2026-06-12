@@ -30,6 +30,30 @@ fn anchor_summary_with_intent(intent: &str, summary: &str) -> String {
     format!("Original request: {intent}\n\n{summary}")
 }
 
+/// Persist an INCREMENTAL checkpoint: a background summary fired at a usage
+/// threshold (MiMo cadence) without folding. Unlike the fold handler this
+/// writes ONLY the durable checkpoint — no session rotation, no message
+/// drop, no save — keyed by the conversation's current origin, with the
+/// write-once intent recovered from any prior checkpoint (else the live
+/// first prompt). Synchronous but light (one small SQLite upsert).
+pub(crate) fn handle_checkpoint_refresh(session: &crate::session::Session, summary: &str) {
+    if summary.is_empty() {
+        return;
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let paths = crate::extras::dirge_paths::ProjectPaths::new(&cwd);
+    if let Ok(db) = crate::extras::session_db::SessionDb::open(&paths.session_db_path()) {
+        let origin = session.effective_origin().to_string();
+        let mut intent = session.first_user_prompt().unwrap_or("").to_string();
+        if let Some(cp) = db.get_checkpoint(&origin).ok().flatten()
+            && !cp.intent.is_empty()
+        {
+            intent = cp.intent;
+        }
+        db.checkpoint_after_fold(&origin, &intent, summary);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_context_compacted(
     ctx: &mut RunCtx<'_>,

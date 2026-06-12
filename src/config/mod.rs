@@ -484,6 +484,13 @@ pub struct Config {
     /// `0.3..=0.75`; out-of-range or unset keeps the `0.75` default.
     /// Installed process-wide at startup.
     pub compaction_fold_threshold: Option<f64>,
+    /// Incremental background checkpoint (MiMo-style): refresh the durable
+    /// session checkpoint at 20%-interval usage thresholds, in the
+    /// background, without folding the live context — so a resume after a
+    /// crash/quit recovers a fresh state. Default ON; set `false` to
+    /// disable (skips the background summary calls). Installed process-wide
+    /// at startup.
+    pub incremental_checkpoint: Option<bool>,
     /// Optional provider for sub-agents (`task` tool).
     pub subagent_provider: Option<String>,
     /// Optional provider for the F6 in-loop critic (tier 3). When set,

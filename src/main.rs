@@ -563,6 +563,17 @@ async fn main() -> anyhow::Result<()> {
     // timeouts install): the compaction decision + summarizer gate consult
     // it so an earlier checkpoint cadence applies from one place.
     crate::agent::agent_loop::context_manager::init_fold_threshold(cfg.compaction_fold_threshold);
+    // Incremental checkpoint is persisted only by the interactive
+    // session-rotation path; the headless modes have no consumer for the
+    // CheckpointRefresh event, so firing it there would just burn
+    // background summary calls. Force it off for --print / --loop.
+    crate::agent::agent_loop::context_manager::init_incremental_checkpoint(
+        if cli.print || cli.loop_mode {
+            Some(false)
+        } else {
+            cfg.incremental_checkpoint
+        },
+    );
     let mut context = context::load(cli.resolve_no_context_files(&cfg));
     // dirge-ykeu: load user-defined agent profiles. Done here (not in
     // context::load) because the lowest-precedence tier is `config.json`

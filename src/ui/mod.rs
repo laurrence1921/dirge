@@ -2543,6 +2543,13 @@ pub async fn run_interactive(
                         )
                         .await?;
                     }
+                    AgentEvent::CheckpointRefresh { ref summary } => {
+                        // Incremental, non-destructive: persist the durable
+                        // checkpoint only — no rotation, no message drop.
+                        run_handlers::context_compacted::handle_checkpoint_refresh(
+                            session, summary,
+                        );
+                    }
                     AgentEvent::UserMessage { content } => {
                         run_handlers::notices::handle_user_message(&mut renderer, &content)?;
                         // session.add_message handled at input time.

@@ -680,6 +680,7 @@ fn full_run_event_sequence_translates_correctly() {
             AgentEvent::Error(_) => "Error",
             AgentEvent::ContextOverflow { .. } => "ContextOverflow",
             AgentEvent::ContextCompacted { .. } => "ContextCompacted",
+            AgentEvent::CheckpointRefresh { .. } => "CheckpointRefresh",
             AgentEvent::Interjected { .. } => "Interjected",
             AgentEvent::CustomMessage { .. } => "CustomMessage",
             AgentEvent::UserMessage { .. } => "UserMessage",

@@ -481,6 +481,13 @@ pub enum LoopEvent {
         summary_model: Option<String>,
     },
 
+    /// Incremental checkpoint: a background summary was generated at a
+    /// MiMo-style usage threshold (20/40/60/80% …) WITHOUT folding the
+    /// live context. The consumer writes it to the durable session
+    /// checkpoint (origin-keyed) so a later resume/overflow recovers a
+    /// fresh state, but must NOT rotate the session or drop messages.
+    CheckpointRefresh { summary: String },
+
     /// PROV-2: the retry layer is about to re-attempt the stream.
     /// Carries the attempt number (1-indexed), the backoff delay,
     /// and the original error. The UI can show a banner instead
@@ -574,6 +581,7 @@ impl LoopEvent {
             LoopEvent::TurnStart => "turn_start",
             LoopEvent::TurnEnd { .. } => "turn_end",
             LoopEvent::ContextCompacted { .. } => "context_compacted",
+            LoopEvent::CheckpointRefresh { .. } => "checkpoint_refresh",
             LoopEvent::RetryNotice { .. } => "retry_notice",
             LoopEvent::SystemNotice { .. } => "system_notice",
             LoopEvent::RepairStats { .. } => "repair_stats",

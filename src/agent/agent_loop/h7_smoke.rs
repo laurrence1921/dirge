@@ -157,6 +157,9 @@ fn dump_events(events: &[AgentEvent]) {
             AgentEvent::ContextCompacted { .. } => {
                 eprintln!("\n[context_compacted]");
             }
+            AgentEvent::CheckpointRefresh { .. } => {
+                eprintln!("\n[checkpoint_refresh]");
+            }
             AgentEvent::RetryNotice {
                 attempt,
                 delay_ms,

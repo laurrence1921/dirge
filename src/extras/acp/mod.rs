@@ -326,6 +326,7 @@ async fn run_prompt(
             AgentEvent::TurnStart { .. }
             | AgentEvent::TurnEnd { .. }
             | AgentEvent::ContextCompacted { .. }
+            | AgentEvent::CheckpointRefresh { .. }
             | AgentEvent::RetryNotice { .. }
             | AgentEvent::SystemNotice { .. }
             | AgentEvent::RepairStats { .. }

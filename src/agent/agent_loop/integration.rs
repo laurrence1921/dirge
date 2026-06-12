@@ -1225,6 +1225,7 @@ mod tests {
             AgentEvent::CustomMessage { .. } => "CustomMessage",
             AgentEvent::UserMessage { .. } => "UserMessage",
             AgentEvent::ContextCompacted { .. } => "ContextCompacted",
+            AgentEvent::CheckpointRefresh { .. } => "CheckpointRefresh",
             AgentEvent::RetryNotice { .. } => "RetryNotice",
             AgentEvent::SystemNotice { .. } => "SystemNotice",
             AgentEvent::RepairStats { .. } => "RepairStats",

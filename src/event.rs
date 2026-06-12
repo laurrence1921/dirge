@@ -132,6 +132,13 @@ pub enum AgentEvent {
         /// follow-up).
         summary_model: Option<CompactString>,
     },
+    /// Incremental checkpoint: a background summary was generated at a
+    /// usage threshold without folding the live context. The consumer
+    /// writes it to the durable session checkpoint but does NOT rotate
+    /// the session or drop messages.
+    CheckpointRefresh {
+        summary: CompactString,
+    },
     Done {
         response: CompactString,
         tokens: u64,
