@@ -17,9 +17,10 @@
 //!   queryable for progress — not regex over `- [ ]`.
 //! - Queryable specs and a transactional archive fold.
 //!
-//! This module is the Rust foundation: the data model and ops. The Janet
-//! plugin surface (workflow commands) drives these via a `harness/__spec`
-//! bridge built on top (a later phase).
+//! This is the data model and ops; the agent drives it through the `spec`
+//! tool ([`crate::agent::tools::SpecTool`]), and the active change is
+//! injected into the preamble ([`SpecStore::format_active_change_for_prompt`])
+//! so a resumed session knows what it's implementing.
 
 use std::sync::Mutex;
 
@@ -441,6 +442,70 @@ impl SpecStore {
         Ok(out)
     }
 
+    // ----- context injection -------------------------------------------
+
+    /// A preamble block describing the active change (status `active`,
+    /// newest if several), or an empty string when there is none. Injected
+    /// at agent-build time so a resumed or fresh session knows which change
+    /// it's implementing — and where it left off — without first querying
+    /// the `spec` tool. Best-effort: any DB error yields an empty block.
+    pub fn format_active_change_for_prompt(&self) -> String {
+        let change = match self.list_changes(Some("active")) {
+            Ok(mut v) => match v.drain(..).next() {
+                Some(c) => c,
+                None => return String::new(),
+            },
+            Err(_) => return String::new(),
+        };
+        let tasks = self.list_tasks(&change.slug).unwrap_or_default();
+        let deltas = self.list_deltas(&change.slug).unwrap_or_default();
+
+        let mut s = String::new();
+        s.push_str("\n\n## Active spec change\n");
+        let heading = if change.title.is_empty() {
+            change.slug.clone()
+        } else {
+            format!("{} ({})", change.title, change.slug)
+        };
+        s.push_str(&format!("**{heading}**\n"));
+        if !change.why.trim().is_empty() {
+            s.push_str(&format!("Why: {}\n", change.why));
+        }
+        if !change.what.trim().is_empty() {
+            s.push_str(&format!("What: {}\n", change.what));
+        }
+        if !change.design.trim().is_empty() {
+            s.push_str(&format!("Design: {}\n", change.design));
+        }
+        if !deltas.is_empty() {
+            let names: Vec<String> = deltas
+                .iter()
+                .map(|d| format!("{} {}:{}", d.op, d.capability, d.requirement))
+                .collect();
+            s.push_str(&format!("Requirement deltas: {}\n", names.join("; ")));
+        }
+        if !tasks.is_empty() {
+            let done = tasks.iter().filter(|t| t.status == "done").count();
+            s.push_str(&format!("Tasks ({done}/{} done):\n", tasks.len()));
+            for t in &tasks {
+                let mark = match t.status.as_str() {
+                    "done" => "x",
+                    "in_progress" => "~",
+                    "blocked" => "!",
+                    _ => " ",
+                };
+                s.push_str(&format!(
+                    "- [{mark}] {}.{} {} (#{})\n",
+                    t.group_no, t.seq, t.text, t.id
+                ));
+            }
+        }
+        s.push_str(
+            "Update this with the `spec` tool as you work (set_task, add_delta) and `archive` when every task is done.\n",
+        );
+        s
+    }
+
     // ----- archive (fold deltas into living specs) ---------------------
 
     /// Archive a change: fold its deltas into the living specs in a single
@@ -820,6 +885,48 @@ mod tests {
         let active = s.list_changes(Some("active")).unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].slug, "b");
+    }
+
+    #[test]
+    fn active_change_block_is_empty_without_active_change() {
+        let (s, _d) = store();
+        assert_eq!(s.format_active_change_for_prompt(), "");
+        // A draft (not active) change still yields no block.
+        s.create_change("c", "", "w", "x").unwrap();
+        assert_eq!(s.format_active_change_for_prompt(), "");
+    }
+
+    #[test]
+    fn active_change_block_summarizes_change_tasks_and_deltas() {
+        let (s, _d) = store();
+        s.create_change("add-x", "Add X", "need x", "build x")
+            .unwrap();
+        s.set_change_status("add-x", "active").unwrap();
+        s.add_delta(
+            "add-x",
+            "added",
+            "xcap",
+            "Do X",
+            "SHALL do X",
+            &[],
+            "",
+            "",
+            "",
+        )
+        .unwrap();
+        let t = s.add_task("add-x", 1, 1, "wire it").unwrap();
+        s.set_task_status(t, "in_progress").unwrap();
+
+        let block = s.format_active_change_for_prompt();
+        assert!(block.contains("Active spec change"));
+        assert!(block.contains("Add X (add-x)"));
+        assert!(block.contains("need x"));
+        assert!(block.contains("added xcap:Do X"));
+        assert!(block.contains("0/1 done"));
+        assert!(
+            block.contains("[~] 1.1 wire it"),
+            "in_progress marker: {block}"
+        );
     }
 
     #[test]

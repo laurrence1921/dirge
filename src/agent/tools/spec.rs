@@ -13,12 +13,17 @@ use rig::tool::Tool;
 use serde::Deserialize;
 
 use crate::agent::tools::{AskSender, PermCheck, ToolError, check_perm};
+use crate::extras::memory_provider::MemoryProvider;
 use crate::extras::spec_db::{Scenario, SpecStore};
 
 pub struct SpecTool {
     permission: Option<PermCheck>,
     ask_tx: Option<AskSender>,
     store: Arc<SpecStore>,
+    /// Optional project memory store. On `archive`, the change's intent and
+    /// design decisions are folded into a durable memory so the rationale
+    /// outlives the change record. `None` disables that (no-op).
+    memory: Option<Arc<dyn MemoryProvider>>,
 }
 
 impl SpecTool {
@@ -31,7 +36,15 @@ impl SpecTool {
             permission,
             ask_tx,
             store,
+            memory: None,
         }
+    }
+
+    /// Attach the project memory store so `archive` forms a memory of the
+    /// change's why/decisions. `None` is a no-op.
+    pub fn with_memory(mut self, memory: Option<Arc<dyn MemoryProvider>>) -> Self {
+        self.memory = memory;
+        self
     }
 }
 
@@ -228,7 +241,22 @@ scenarios = array of {name, when_then} (when_then in WHEN/THEN form)."#
                         "Cannot archive '{slug}': {done}/{total} tasks done. Finish or remove open tasks first."
                     )));
                 }
+                // Capture the change before folding so we can form a memory
+                // of its intent + decisions even though archive flips status.
+                let change = store.get_change(slug).map_err(m)?;
                 let report = store.archive_change(slug).map_err(m)?;
+                // Fold the change's why/design into durable project memory so
+                // the rationale outlives the change record (best-effort).
+                if let (Some(mem), Some(c)) = (&self.memory, &change) {
+                    let mut content = format!("Shipped change '{}'.", c.slug);
+                    if !c.why.trim().is_empty() {
+                        content.push_str(&format!(" Why: {}", c.why.trim()));
+                    }
+                    if !c.design.trim().is_empty() {
+                        content.push_str(&format!(" Decisions: {}", c.design.trim()));
+                    }
+                    let _ = mem.add("memory", &content, Some("episodic"));
+                }
                 Ok(format!(
                     "Archived '{slug}'. Folded into living specs: {} added, {} modified, {} removed, {} renamed.",
                     report.added, report.modified, report.removed, report.renamed
@@ -373,5 +401,76 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn archive_forms_a_memory_of_the_change() {
+        use std::sync::Mutex;
+
+        // Records add() calls so we can assert archive folds the change into
+        // memory.
+        struct RecordingMem(Mutex<Vec<String>>);
+        impl MemoryProvider for RecordingMem {
+            fn name(&self) -> &str {
+                "rec"
+            }
+            fn view(&self, _t: &str) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            fn add(
+                &self,
+                _target: &str,
+                content: &str,
+                _kind: Option<&str>,
+            ) -> Result<serde_json::Value, String> {
+                self.0.lock().unwrap().push(content.to_string());
+                Ok(serde_json::json!({}))
+            }
+            fn replace(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+                _: Option<&str>,
+            ) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!({}))
+            }
+            fn remove(&self, _: &str, _: &str) -> Result<serde_json::Value, String> {
+                Ok(serde_json::json!({}))
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("dirge-specmem-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = SpecStore::open_at(&dir.join("state.db")).unwrap();
+        let mem = Arc::new(RecordingMem(Mutex::new(Vec::new())));
+        let t = SpecTool::new(Arc::new(store), None, None)
+            .with_memory(Some(mem.clone() as Arc<dyn MemoryProvider>));
+
+        call(
+            &t,
+            serde_json::json!({"action": "propose", "slug": "ship-it", "why": "users need it", "what": "the thing"}),
+        )
+        .await
+        .unwrap();
+        call(
+            &t,
+            serde_json::json!({"action": "set_field", "slug": "ship-it", "field": "design", "value": "use a queue"}),
+        )
+        .await
+        .unwrap();
+        // No tasks → archive allowed immediately.
+        call(
+            &t,
+            serde_json::json!({"action": "archive", "slug": "ship-it"}),
+        )
+        .await
+        .unwrap();
+
+        let recorded = mem.0.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1, "exactly one memory formed on archive");
+        assert!(recorded[0].contains("ship-it"));
+        assert!(recorded[0].contains("users need it"));
+        assert!(recorded[0].contains("use a queue"));
     }
 }

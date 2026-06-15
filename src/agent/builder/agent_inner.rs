@@ -174,6 +174,21 @@ pub async fn build_agent_inner<M: CompletionModel + 'static>(
             &global_provider,
         );
     }
+    // Inject the active spec change (if any) so a resumed or fresh session
+    // knows which change it's implementing and where it left off, without
+    // first querying the `spec` tool. Best-effort; synchronous DB I/O runs
+    // on the blocking pool like the memory load above.
+    let paths_for_spec = paths.clone();
+    if let Ok(block) = tokio::task::spawn_blocking(move || {
+        crate::extras::spec_db::SpecStore::open(&paths_for_spec)
+            .map(|s| s.format_active_change_for_prompt())
+    })
+    .await
+    .unwrap_or_else(|_| Err("spawn_blocking join failed".to_string()))
+        && !block.trim().is_empty()
+    {
+        preamble.push_str(&block);
+    }
     let skill_manager = crate::extras::skills::manager::SkillManager::new(&paths);
     let mut usage_store = crate::extras::skills::usage::UsageStore::load(&paths).ok();
 
