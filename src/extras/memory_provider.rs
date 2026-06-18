@@ -90,6 +90,21 @@ pub trait MemoryProvider: Send + Sync {
         Err("This memory backend does not support searching entries".to_string())
     }
 
+    /// Record a procedural playbook's real-world outcome (dirge-zygq):
+    /// `success=true` for a confirmed success, `false` for a failure.
+    /// `old_text` matches by uid or unique substring. Intended for the
+    /// background review pass, which infers outcomes from the
+    /// transcript. Default errors for backends that don't track
+    /// effectiveness.
+    fn record_outcome(
+        &self,
+        _target: &str,
+        _old_text: &str,
+        _success: bool,
+    ) -> Result<Value, String> {
+        Err("This memory backend does not support recording outcomes".to_string())
+    }
+
     // ── Optional lifecycle hooks — default no-ops ──────────────
 
     /// Notify the provider that a memory write just happened via
@@ -209,6 +224,10 @@ impl MemoryProvider for super::memory_db::SqliteMemoryStore {
 
     fn search(&self, query: &str) -> Result<Value, String> {
         super::memory_db::SqliteMemoryStore::search(self, query)
+    }
+
+    fn record_outcome(&self, target: &str, old_text: &str, success: bool) -> Result<Value, String> {
+        super::memory_db::SqliteMemoryStore::record_outcome(self, target, old_text, success)
     }
 }
 
