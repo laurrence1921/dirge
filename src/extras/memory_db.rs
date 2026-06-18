@@ -1616,16 +1616,20 @@ impl SqliteMemoryStore {
     /// the curator's mechanical pass so decay accrues per curation
     /// cycle, not per session. Returns how many entries decayed.
     ///
-    /// dirge-zygq: a `procedural` entry with a recorded track record
-    /// (any success/failure) is EXEMPT. Such a playbook ranks on its
-    /// proven effectiveness ([`effectiveness_bonus`]), not on recency
-    /// of use — decaying it by disuse would reward "recently tried"
-    /// over "recently effective", the failure mode the Elastic
-    /// agent-memory work calls out for procedural memory. The exemption
-    /// is deliberately scoped to PROVEN playbooks: `procedural` is the
-    /// default kind, so an unvalidated procedural entry (no outcomes
-    /// yet) still decays like any other stale, unconsulted fact — it
-    /// only escapes decay once it has effectiveness data to rank on.
+    /// dirge-zygq/dirge-j92d: a `procedural` entry that has been
+    /// RECENTLY EFFECTIVE is EXEMPT — it has a `last_success_at` within
+    /// the same cutoff window. Such a playbook ranks on proven
+    /// effectiveness ([`effectiveness_bonus`]), not recency of use, and
+    /// decaying it by disuse would reward "recently tried" over
+    /// "recently effective" (the failure mode the Elastic agent-memory
+    /// work calls out). The exemption keys on `last_success_at`, not the
+    /// mere presence of outcomes, so it stays scoped to playbooks that
+    /// are STILL working: a procedural whose only successes are older
+    /// than the window, one that has only ever failed, and an
+    /// unvalidated procedural (no outcomes — `procedural` is the default
+    /// kind) all decay like any other stale, unconsulted entry. This is
+    /// what makes `last_success_at` a live signal rather than a
+    /// write-only column.
     pub fn apply_disuse_decay(&self, cutoff_days: i64) -> Result<usize, String> {
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(cutoff_days)).to_rfc3339();
         let conn = self.conn.lock_ignore_poison();
@@ -1634,7 +1638,9 @@ impl SqliteMemoryStore {
                 "UPDATE memories
                  SET salience = MAX(?1, salience - ?2)
                  WHERE status = 'active'
-                   AND NOT (kind = 'procedural' AND (success_count + failure_count) > 0)
+                   AND NOT (kind = 'procedural'
+                            AND last_success_at IS NOT NULL
+                            AND last_success_at >= ?3)
                    AND created_at < ?3
                    AND (last_used_at IS NULL OR last_used_at < ?3)
                    AND salience > ?1",
@@ -1642,6 +1648,48 @@ impl SqliteMemoryStore {
             )
             .map_err(|e| format!("Failed to apply disuse decay: {e}"))?;
         Ok(changed)
+    }
+
+    /// dirge-bb4y: hard-delete RETIRED rows (tombstoned or superseded) whose
+    /// last mutation is older than `older_than_days`, with their FTS index
+    /// rows. Returns how many were purged. Run by the curator's mechanical
+    /// pass to bound long-term DB growth.
+    ///
+    /// This is a deliberately bounded relaxation of dirge-8h22 ("nothing is
+    /// hard-deleted"): the never-delete guarantee exists so a removal is
+    /// restorable and an audit chain survives, but neither needs to last
+    /// forever. With a long retention window a tombstone old enough to purge
+    /// is one nobody restored in months, and a superseded fact that old has a
+    /// live successor — so dropping them frees space without any practical loss
+    /// of the restore affordance or recent audit history. ACTIVE rows are never
+    /// touched. `memories_fts` is standalone (not external-content), so a plain
+    /// `DELETE ... WHERE rowid` is exact (the v7 schema note).
+    pub fn purge_retired_rows(&self, older_than_days: i64) -> Result<usize, String> {
+        let cutoff = (chrono::Utc::now() - chrono::Duration::days(older_than_days)).to_rfc3339();
+        let mut conn = self.conn.lock_ignore_poison();
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Failed to begin purge transaction: {e}"))?;
+        // Two set-based deletes (not a per-row loop): drop the FTS rows FIRST,
+        // while the subquery still resolves against the about-to-be-deleted
+        // memory rows, then the memory rows themselves.
+        const RETIRED: &str = "status IN ('tombstoned', 'superseded') AND updated_at < ?1";
+        tx.execute(
+            &format!(
+                "DELETE FROM memories_fts WHERE rowid IN (SELECT id FROM memories WHERE {RETIRED})"
+            ),
+            params![cutoff],
+        )
+        .map_err(|e| format!("Failed to purge fts rows: {e}"))?;
+        let purged = tx
+            .execute(
+                &format!("DELETE FROM memories WHERE {RETIRED}"),
+                params![cutoff],
+            )
+            .map_err(|e| format!("Failed to purge memory rows: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit purge: {e}"))?;
+        Ok(purged)
     }
 
     /// Hot-tier budget utilization (%) for a target — the curator's
@@ -3456,10 +3504,11 @@ mod tests {
         );
     }
 
-    /// dirge-zygq: a PROVEN procedural entry (has outcomes) is exempt
-    /// from disuse decay — it ranks on its record, not on recency. But
-    /// an unvalidated procedural (no outcomes) still decays, since
-    /// procedural is the default kind and must not get a blanket pass.
+    /// dirge-zygq/dirge-j92d: a procedural entry with a RECENT success is
+    /// exempt from disuse decay (here the success is fresh), while an
+    /// unvalidated procedural still decays — procedural is the default kind and
+    /// gets no blanket pass. The recency gate itself (stale success / failures
+    /// decay) is covered by `disuse_decay_exempts_only_recently_effective_procedural`.
     #[test]
     fn disuse_decay_exempts_only_proven_procedural() {
         let (paths, _dir) = temp_project();
@@ -3522,6 +3571,136 @@ mod tests {
             "semantic still decays: {}",
             sal("old fact")
         );
+    }
+
+    /// dirge-j92d: the exemption is "recently effective", not "ever had an
+    /// outcome". A procedural whose last success is older than the window
+    /// decays, and one that has only ever failed decays — only a recently
+    /// successful playbook is spared, which is what makes `last_success_at` a
+    /// live signal.
+    #[test]
+    fn disuse_decay_exempts_only_recently_effective_procedural() {
+        let (paths, _dir) = temp_project();
+        let store = SqliteMemoryStore::load(&paths).unwrap();
+        for c in ["recent win", "stale win", "only fails"] {
+            store
+                .add_entry("memory", c, Some(MemoryKind::Procedural))
+                .unwrap();
+        }
+        store.record_outcome("memory", "recent win", true).unwrap();
+        store.record_outcome("memory", "stale win", true).unwrap();
+        store.record_outcome("memory", "only fails", false).unwrap();
+
+        // Age every entry past the decay window; backdate "stale win"'s success
+        // beyond the window so it's no longer recently effective.
+        let conn = raw_conn(&paths);
+        let old = (chrono::Utc::now() - chrono::Duration::days(90)).to_rfc3339();
+        conn.execute(
+            "UPDATE memories SET created_at = ?1 WHERE content IN ('recent win', 'stale win', 'only fails')",
+            rusqlite::params![old],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE memories SET last_success_at = ?1 WHERE content = 'stale win'",
+            rusqlite::params![old],
+        )
+        .unwrap();
+        drop(conn);
+
+        let decayed = store.apply_disuse_decay(30).unwrap();
+        assert_eq!(
+            decayed, 2,
+            "stale-win and only-fails decay; recent-win exempt"
+        );
+
+        let conn = raw_conn(&paths);
+        let sal = |content: &str| -> f64 {
+            conn.query_row(
+                "SELECT salience FROM memories WHERE content = ?1",
+                rusqlite::params![content],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(
+            (sal("recent win") - 0.5).abs() < 1e-9,
+            "recently-effective playbook exempt: {}",
+            sal("recent win"),
+        );
+        assert!(
+            sal("stale win") < 0.5,
+            "stale success decays: {}",
+            sal("stale win")
+        );
+        assert!(
+            sal("only fails") < 0.5,
+            "failure-only playbook decays: {}",
+            sal("only fails"),
+        );
+    }
+
+    /// dirge-bb4y: the curator GC hard-deletes ancient retired rows
+    /// (tombstoned/superseded) and their FTS entries, while leaving active rows
+    /// and recently-retired rows alone.
+    #[test]
+    fn purge_retired_rows_drops_only_ancient_retired() {
+        let (paths, _dir) = temp_project();
+        let store = SqliteMemoryStore::load(&paths).unwrap();
+        store.add_entry("memory", "active fact", None).unwrap();
+        store
+            .add_entry("memory", "old removed entry", None)
+            .unwrap();
+        store.remove_entry("memory", "old removed entry").unwrap();
+        store
+            .add_entry("memory", "recent removed entry", None)
+            .unwrap();
+        store
+            .remove_entry("memory", "recent removed entry")
+            .unwrap();
+        store
+            .add_entry("memory", "old claim", Some(MemoryKind::Semantic))
+            .unwrap();
+        store
+            .supersede_entry("memory", "old claim", "new claim", None, false)
+            .unwrap();
+
+        // Backdate the two "old" retired rows past the retention window.
+        let conn = raw_conn(&paths);
+        let old = (chrono::Utc::now() - chrono::Duration::days(200)).to_rfc3339();
+        conn.execute(
+            "UPDATE memories SET updated_at = ?1 WHERE content IN ('old removed entry', 'old claim')",
+            rusqlite::params![old],
+        )
+        .unwrap();
+        drop(conn);
+
+        let purged = store.purge_retired_rows(180).unwrap();
+        assert_eq!(purged, 2, "old tombstone + old superseded purged");
+
+        let conn = raw_conn(&paths);
+        let count = |content: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM memories WHERE content = ?1",
+                rusqlite::params![content],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(count("old removed entry"), 0, "old tombstone gone");
+        assert_eq!(count("old claim"), 0, "old superseded gone");
+        assert_eq!(count("recent removed entry"), 1, "recent tombstone kept");
+        assert_eq!(count("active fact"), 1, "active row untouched");
+        assert_eq!(count("new claim"), 1, "active successor untouched");
+        // The purged entry's FTS row is gone — only the recent tombstone's
+        // 'removed' token remains.
+        let fts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH ?1",
+                rusqlite::params!["removed"],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(fts, 1, "purged entry's FTS row deleted; recent one remains");
     }
 
     /// Eviction: of two procedural entries of equal base salience, the
