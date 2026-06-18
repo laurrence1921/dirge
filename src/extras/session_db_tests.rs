@@ -1046,3 +1046,65 @@ fn schema_v10_migrates_from_v9() {
     assert_eq!(kept, 1, "v10 migration must not disturb existing memories");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// dirge-zygq: a fresh DB carries the procedural-effectiveness
+/// columns, and a pre-v12 DB gains them on reopen with sane defaults
+/// while existing memories survive.
+#[test]
+fn schema_v12_adds_procedural_outcome_columns() {
+    // Fresh DB: all three columns present.
+    let (db, _dir) = temp_db();
+    for col in ["success_count", "failure_count", "last_success_at"] {
+        let present: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = ?1",
+                [col],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(present, 1, "fresh DB must have the {col} column");
+    }
+
+    // Pre-v12 DB: memories table without the outcome columns + a row,
+    // version pinned to 11, then reopen so migrate() runs v12.
+    let n = DB_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("dirge-v12-migrate-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT NOT NULL UNIQUE,
+                 target TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'procedural',
+                 content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+                 tier TEXT NOT NULL DEFAULT 'hot', salience REAL NOT NULL DEFAULT 0.5,
+                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_used_at TEXT,
+                 use_count INTEGER NOT NULL DEFAULT 0, superseded_by TEXT
+             );
+             INSERT INTO memories (uid, target, content, created_at, updated_at)
+                 VALUES ('urn:ump:keep', 'memory', 'survives the migration', 'x', 'x');
+             PRAGMA user_version = 11;",
+        )
+        .unwrap();
+    }
+    let db = SessionDb::open(&path).unwrap();
+    // Columns now exist with the documented defaults on the kept row.
+    let (s, f, last): (i64, i64, Option<String>) = db
+        .conn
+        .query_row(
+            "SELECT success_count, failure_count, last_success_at FROM memories
+             WHERE uid = 'urn:ump:keep'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (s, f, last),
+        (0, 0, None),
+        "outcome columns default to 0/0/NULL"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

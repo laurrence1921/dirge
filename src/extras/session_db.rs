@@ -22,7 +22,7 @@ use regex::Regex;
 // Used in migrate() to set user_version pragma. pub(crate) so tests
 // assert against the constant instead of a hardcoded number that
 // breaks on every migration.
-pub(crate) const SCHEMA_VERSION: u32 = 11;
+pub(crate) const SCHEMA_VERSION: u32 = 12;
 
 /// Thread-safe snapshot of the most recent `SessionDb::open()` failure.
 /// Port of Hermes's `_last_init_error` (hermes_state.py:66-67).
@@ -307,6 +307,10 @@ impl SessionDb {
 
         if current < 11 {
             self.run_migration_v11()?;
+        }
+
+        if current < 12 {
+            self.run_migration_v12()?;
         }
 
         self.conn
@@ -835,6 +839,37 @@ impl SessionDb {
                 ",
             )
             .map_err(|e| format!("Migration v11 failed: {e}"))?;
+        Ok(())
+    }
+
+    /// v12 (dirge-zygq): procedural effectiveness signal. Procedural
+    /// memories are playbooks ("how to do X") whose value is whether
+    /// they actually worked, not how recently they were tried — the
+    /// Elastic agent-memory point that a decay multiplier rewards
+    /// "recently tried" over "recently effective". These counters let
+    /// ranking and eviction favor playbooks with a positive track
+    /// record; `extras::memory_db` exempts procedural from disuse
+    /// decay and folds `success_count - failure_count` into the
+    /// effective-salience used for eviction and search ordering.
+    /// `last_success_at` records the most recent confirmed success so
+    /// a future "recently effective" decay can key off it. Columns are
+    /// inert for non-procedural kinds (never written by
+    /// `record_outcome`). `ADD COLUMN` is idempotent-guarded by the
+    /// duplicate-column check so a partially-migrated DB doesn't error.
+    fn run_migration_v12(&self) -> Result<(), String> {
+        for col in &[
+            "success_count INTEGER NOT NULL DEFAULT 0",
+            "failure_count INTEGER NOT NULL DEFAULT 0",
+            "last_success_at TEXT",
+        ] {
+            if let Err(e) = self
+                .conn
+                .execute(&format!("ALTER TABLE memories ADD COLUMN {col}"), [])
+                && !e.to_string().contains("duplicate column name")
+            {
+                return Err(format!("Migration v12 failed on {col}: {e}"));
+            }
+        }
         Ok(())
     }
 

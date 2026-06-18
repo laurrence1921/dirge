@@ -202,6 +202,39 @@ const USE_REINFORCEMENT: f64 = 0.05;
 const DISUSE_DECAY: f64 = 0.05;
 const DECAY_FLOOR: f64 = 0.1;
 
+// ── Procedural effectiveness (dirge-zygq) ────────────────────────────
+
+/// Procedural memories are playbooks whose value is whether they
+/// actually worked, not how recently they were tried. The background
+/// review pass records confirmed successes/failures (success_count /
+/// failure_count); this term folds the net record into the effective
+/// salience used for eviction and search ordering, so a playbook with
+/// a positive track record outranks one that's failed in practice.
+///
+/// Log-damped like the `expand` usage signal and bounded by
+/// [`EFFECTIVENESS_CAP`] so outcomes nudge ranking without letting a
+/// hot playbook outrank a durable identity fact (0.75) on its record
+/// alone. With weight 0.15: net `log10(1+|net|)*0.15`, so +1 ≈ +0.045,
+/// +9 ≈ +0.15, +99 saturates at the +0.30 cap (intermediate records sit
+/// between — e.g. +19 ≈ +0.20); failures mirror negative. Returns 0 for
+/// every non-procedural kind (they carry no outcome signal) and for
+/// procedural entries with an even record.
+const EFFECTIVENESS_WEIGHT: f64 = 0.15;
+const EFFECTIVENESS_CAP: f64 = 0.3;
+
+fn effectiveness_bonus(kind: &str, success_count: i64, failure_count: i64) -> f64 {
+    if kind != "procedural" {
+        return 0.0;
+    }
+    let net = success_count - failure_count;
+    if net == 0 {
+        return 0.0;
+    }
+    let magnitude = ((1 + net.unsigned_abs()) as f64).log10() * EFFECTIVENESS_WEIGHT;
+    let bounded = magnitude.min(EFFECTIVENESS_CAP);
+    if net > 0 { bounded } else { -bounded }
+}
+
 fn char_limit_for(target: &str) -> usize {
     match target {
         "pitfalls" => DEFAULT_PITFALL_CHAR_LIMIT,
@@ -338,6 +371,10 @@ struct ActiveRow {
     status: String,
     tier: String,
     last_used_at: Option<String>,
+    /// dirge-zygq: procedural outcome counters. Always 0 for
+    /// non-procedural kinds (`record_outcome` only writes procedural).
+    success_count: i64,
+    failure_count: i64,
 }
 
 /// What a budget compaction did: `demoted` hot entries moved to the
@@ -582,7 +619,8 @@ impl SqliteMemoryStore {
         extra_where: &str,
     ) -> Result<Vec<ActiveRow>, String> {
         let sql = format!(
-            "SELECT id, uid, kind, content, salience, status, tier, last_used_at
+            "SELECT id, uid, kind, content, salience, status, tier, last_used_at,
+                    success_count, failure_count
              FROM memories WHERE target = ?1 AND {extra_where} ORDER BY id"
         );
         let mut stmt = conn
@@ -599,6 +637,8 @@ impl SqliteMemoryStore {
                     status: row.get(5)?,
                     tier: row.get(6)?,
                     last_used_at: row.get(7)?,
+                    success_count: row.get(8)?,
+                    failure_count: row.get(9)?,
                 })
             })
             .map_err(|e| format!("Failed to query entries: {e}"))?
@@ -652,7 +692,13 @@ impl SqliteMemoryStore {
                 .as_deref()
                 .map(|t| t > cutoff.as_str())
                 .unwrap_or(false);
-            r.salience + if recent { RECENT_USE_BONUS } else { 0.0 }
+            // dirge-zygq: a procedural playbook's proven track record
+            // shifts its eviction priority — a repeatedly-effective one
+            // outlives a failed one of equal salience; zero for other
+            // kinds.
+            r.salience
+                + if recent { RECENT_USE_BONUS } else { 0.0 }
+                + effectiveness_bonus(&r.kind, r.success_count, r.failure_count)
         };
         let mut best: Option<(usize, f64)> = None;
         for (i, row) in rows.iter().enumerate() {
@@ -876,8 +922,18 @@ impl SqliteMemoryStore {
         let now = chrono::Utc::now().to_rfc3339();
         match kind {
             Some(k) => {
+                // dirge-zygq: a re-classification resets the lifecycle —
+                // salience re-derives from the new kind, and the
+                // procedural outcome counters reset to zero. This keeps
+                // the "non-procedural entries carry no outcome signal"
+                // invariant true (a procedural entry re-kinded to
+                // semantic must not keep its old success/failure record)
+                // and lets a fresh `procedural` classification start its
+                // track record clean.
                 tx.execute(
-                    "UPDATE memories SET content = ?1, kind = ?2, salience = ?3, updated_at = ?4
+                    "UPDATE memories
+                     SET content = ?1, kind = ?2, salience = ?3, updated_at = ?4,
+                         success_count = 0, failure_count = 0, last_success_at = NULL
                      WHERE id = ?5",
                     params![new_entry, k.as_str(), default_salience_for_kind(k), now, id],
                 )
@@ -1015,6 +1071,71 @@ impl SqliteMemoryStore {
         }))
     }
 
+    /// Record that a procedural playbook succeeded or failed in
+    /// practice (dirge-zygq). Matches the entry by uid or unique
+    /// substring (same rules as `replace`/`remove`), bumps the matching
+    /// counter, and stamps `last_success_at` on a success. The outcome
+    /// signal is procedural-only: a playbook is the only memory kind
+    /// with a "did it work" notion, and keeping the counters zero for
+    /// every other kind is what lets eviction/search order by
+    /// `success_count - failure_count` without skewing facts. Marking a
+    /// non-procedural entry is therefore rejected rather than silently
+    /// no-oped, so a mis-aimed call surfaces instead of corrupting the
+    /// signal.
+    ///
+    /// The intended caller is the background review pass, which reads
+    /// the transcript and infers outcomes ("that worked" / "that didn't
+    /// help") — not the interactive agent's hot path. The action is
+    /// kept out of `SYSTEM_PROMPT` so the live agent isn't told to
+    /// self-grade; it remains in the shared tool schema because the
+    /// review runner filters tools by name, not action (a per-context
+    /// action gate is tracked as follow-up).
+    pub fn record_outcome(
+        &self,
+        target: &str,
+        old_text: &str,
+        success: bool,
+    ) -> Result<serde_json::Value, String> {
+        let conn = self.conn.lock_ignore_poison();
+        let rows = Self::active_rows(&conn, target)?;
+        let idx = find_unique_match(&rows, old_text)?;
+        let row = &rows[idx];
+        if row.kind != "procedural" {
+            return Err(format!(
+                "Outcomes are procedural-only; entry {} is `{}`. Re-classify it to \
+                 procedural first if it is a playbook.",
+                row.uid, row.kind
+            ));
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+        if success {
+            conn.execute(
+                "UPDATE memories
+                 SET success_count = success_count + 1, last_success_at = ?1, updated_at = ?1
+                 WHERE id = ?2",
+                params![now, row.id],
+            )
+        } else {
+            conn.execute(
+                "UPDATE memories
+                 SET failure_count = failure_count + 1, updated_at = ?1
+                 WHERE id = ?2",
+                params![now, row.id],
+            )
+        }
+        .map_err(|e| format!("Failed to record outcome: {e}"))?;
+
+        Ok(serde_json::json!({
+            "success": true,
+            "id": row.uid,
+            "target": target,
+            "outcome": if success { "success" } else { "failure" },
+            "success_count": row.success_count + i64::from(success),
+            "failure_count": row.failure_count + i64::from(!success),
+        }))
+    }
+
     /// Full-text search over all ACTIVE entries, both targets and
     /// tiers (dirge-q8wt). Tokens are individually quoted so user
     /// phrasing can't be an FTS5 syntax error; ranked by bm25.
@@ -1031,11 +1152,20 @@ impl SqliteMemoryStore {
         let conn = self.conn.lock_ignore_poison();
         let mut stmt = conn
             .prepare(
+                // dirge-zygq: among entries of equal BM25 relevance,
+                // prefer the procedural playbook with the better track
+                // record. The CASE keeps the tiebreak procedural-only at
+                // the query layer rather than leaning on the invariant
+                // that other kinds carry zero counters — a re-kinded or
+                // hand-edited row can't skew non-procedural ordering.
                 "SELECT m.uid, m.target, m.kind, m.tier, m.content
                  FROM memories_fts
                  JOIN memories m ON m.id = memories_fts.rowid
                  WHERE memories_fts MATCH ?1 AND m.status = 'active'
-                 ORDER BY rank, m.salience DESC, m.last_used_at DESC LIMIT ?2",
+                 ORDER BY rank,
+                          CASE WHEN m.kind = 'procedural'
+                               THEN (m.success_count - m.failure_count) ELSE 0 END DESC,
+                          m.salience DESC, m.last_used_at DESC LIMIT ?2",
             )
             .map_err(|e| format!("Failed to prepare search: {e}"))?;
         let results: Vec<serde_json::Value> = stmt
@@ -1238,6 +1368,17 @@ impl SqliteMemoryStore {
     /// [`DISUSE_DECAY`] salience, floored at [`DECAY_FLOOR`]. Run by
     /// the curator's mechanical pass so decay accrues per curation
     /// cycle, not per session. Returns how many entries decayed.
+    ///
+    /// dirge-zygq: a `procedural` entry with a recorded track record
+    /// (any success/failure) is EXEMPT. Such a playbook ranks on its
+    /// proven effectiveness ([`effectiveness_bonus`]), not on recency
+    /// of use — decaying it by disuse would reward "recently tried"
+    /// over "recently effective", the failure mode the Elastic
+    /// agent-memory work calls out for procedural memory. The exemption
+    /// is deliberately scoped to PROVEN playbooks: `procedural` is the
+    /// default kind, so an unvalidated procedural entry (no outcomes
+    /// yet) still decays like any other stale, unconsulted fact — it
+    /// only escapes decay once it has effectiveness data to rank on.
     pub fn apply_disuse_decay(&self, cutoff_days: i64) -> Result<usize, String> {
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(cutoff_days)).to_rfc3339();
         let conn = self.conn.lock_ignore_poison();
@@ -1246,6 +1387,7 @@ impl SqliteMemoryStore {
                 "UPDATE memories
                  SET salience = MAX(?1, salience - ?2)
                  WHERE status = 'active'
+                   AND NOT (kind = 'procedural' AND (success_count + failure_count) > 0)
                    AND created_at < ?3
                    AND (last_used_at IS NULL OR last_used_at < ?3)
                    AND salience > ?1",
@@ -2943,5 +3085,268 @@ mod tests {
             assert_eq!(parse_kind(k).unwrap().as_str(), k);
         }
         assert!(parse_kind("bogus").is_none());
+    }
+
+    // ── Procedural effectiveness (dirge-zygq) ────────────────────
+
+    /// The effectiveness term is procedural-only, signed by the net
+    /// record, log-damped, and bounded by the cap.
+    #[test]
+    fn effectiveness_bonus_is_signed_bounded_and_procedural_only() {
+        // Non-procedural kinds never carry an outcome signal.
+        assert_eq!(effectiveness_bonus("semantic", 9, 0), 0.0);
+        assert_eq!(effectiveness_bonus("identity", 5, 1), 0.0);
+        // An even record is neutral.
+        assert_eq!(effectiveness_bonus("procedural", 3, 3), 0.0);
+        assert_eq!(effectiveness_bonus("procedural", 0, 0), 0.0);
+        // Positive record → positive bonus; failures mirror to negative.
+        let up = effectiveness_bonus("procedural", 3, 0);
+        let down = effectiveness_bonus("procedural", 0, 3);
+        assert!(up > 0.0 && down < 0.0);
+        assert!((up + down).abs() < 1e-9, "sign-symmetric: {up} vs {down}");
+        // Bounded by the cap no matter how lopsided the record.
+        assert!(effectiveness_bonus("procedural", 10_000, 0) <= EFFECTIVENESS_CAP + 1e-9);
+        assert!(effectiveness_bonus("procedural", 0, 10_000) >= -EFFECTIVENESS_CAP - 1e-9);
+    }
+
+    /// `mark` bumps the right counter and stamps `last_success_at`
+    /// only on success.
+    #[test]
+    fn record_outcome_bumps_counters() {
+        let (paths, _dir) = temp_project();
+        let store = SqliteMemoryStore::load(&paths).unwrap();
+        store
+            .add_entry(
+                "memory",
+                "run cargo fmt before commit",
+                Some(MemoryKind::Procedural),
+            )
+            .unwrap();
+
+        store.record_outcome("memory", "cargo fmt", true).unwrap();
+        store.record_outcome("memory", "cargo fmt", true).unwrap();
+        store.record_outcome("memory", "cargo fmt", false).unwrap();
+
+        let conn = raw_conn(&paths);
+        let (s, f, last): (i64, i64, Option<String>) = conn
+            .query_row(
+                "SELECT success_count, failure_count, last_success_at FROM memories
+                 WHERE content = 'run cargo fmt before commit'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(s, 2, "two successes recorded");
+        assert_eq!(f, 1, "one failure recorded");
+        assert!(last.is_some(), "last_success_at stamped on success");
+    }
+
+    /// Outcomes are procedural-only — marking a non-procedural entry
+    /// is rejected so the signal stays zero for every other kind.
+    #[test]
+    fn record_outcome_rejects_non_procedural() {
+        let (paths, _dir) = temp_project();
+        let store = SqliteMemoryStore::load(&paths).unwrap();
+        store
+            .add_entry(
+                "memory",
+                "MSRV pinned in rust-toolchain.toml",
+                Some(MemoryKind::Semantic),
+            )
+            .unwrap();
+        let err = store
+            .record_outcome("memory", "MSRV pinned", true)
+            .unwrap_err();
+        assert!(
+            err.contains("procedural-only"),
+            "non-procedural mark must be rejected: {err}"
+        );
+    }
+
+    /// dirge-zygq: a PROVEN procedural entry (has outcomes) is exempt
+    /// from disuse decay — it ranks on its record, not on recency. But
+    /// an unvalidated procedural (no outcomes) still decays, since
+    /// procedural is the default kind and must not get a blanket pass.
+    #[test]
+    fn disuse_decay_exempts_only_proven_procedural() {
+        let (paths, _dir) = temp_project();
+        let store = SqliteMemoryStore::load(&paths).unwrap();
+        store
+            .add_entry(
+                "memory",
+                "deploy rollback rule",
+                Some(MemoryKind::Procedural),
+            )
+            .unwrap();
+        store
+            .add_entry("memory", "cache warmup rule", Some(MemoryKind::Procedural))
+            .unwrap();
+        store
+            .add_entry("memory", "old fact", Some(MemoryKind::Semantic))
+            .unwrap();
+        // Only the deploy rollback rule has a track record.
+        store
+            .record_outcome("memory", "deploy rollback rule", true)
+            .unwrap();
+
+        let conn = raw_conn(&paths);
+        let then = (chrono::Utc::now() - chrono::Duration::days(90)).to_rfc3339();
+        conn.execute(
+            "UPDATE memories SET created_at = ?1
+             WHERE content IN ('deploy rollback rule', 'cache warmup rule', 'old fact')",
+            rusqlite::params![then],
+        )
+        .unwrap();
+        drop(conn);
+
+        let decayed = store.apply_disuse_decay(30).unwrap();
+        assert_eq!(
+            decayed, 2,
+            "cache warmup rule + semantic fact decay; deploy rollback rule exempt"
+        );
+
+        let conn = raw_conn(&paths);
+        let sal = |content: &str| -> f64 {
+            conn.query_row(
+                "SELECT salience FROM memories WHERE content = ?1",
+                rusqlite::params![content],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(
+            (sal("deploy rollback rule") - 0.5).abs() < 1e-9,
+            "deploy rollback rule untouched by decay: {}",
+            sal("deploy rollback rule")
+        );
+        assert!(
+            sal("cache warmup rule") < 0.5,
+            "cache warmup rule still decays: {}",
+            sal("cache warmup rule")
+        );
+        assert!(
+            sal("old fact") < 0.6,
+            "semantic still decays: {}",
+            sal("old fact")
+        );
+    }
+
+    /// Eviction: of two procedural entries of equal base salience, the
+    /// one that has FAILED in practice is demoted first when the hot
+    /// tier overflows — alpha playbooks outlive failed ones.
+    #[test]
+    fn failed_procedural_evicted_before_successful() {
+        let (paths, _dir) = temp_project();
+        let store = SqliteMemoryStore::load(&paths).unwrap();
+        // Two ~900-char procedural entries: together they fit, a third
+        // forces one demotion.
+        let winner = format!("winning playbook {}", "w".repeat(900));
+        let loser = format!("losing playbook {}", "l".repeat(900));
+        store
+            .add_entry("memory", &winner, Some(MemoryKind::Procedural))
+            .unwrap();
+        store
+            .add_entry("memory", &loser, Some(MemoryKind::Procedural))
+            .unwrap();
+        // Give them opposite track records.
+        for _ in 0..9 {
+            store.record_outcome("memory", &winner, true).unwrap();
+            store.record_outcome("memory", &loser, false).unwrap();
+        }
+        // A high-salience identity entry overflows the hot budget,
+        // forcing exactly one procedural down to breadcrumb.
+        let filler = format!("operator identity {}", "i".repeat(900));
+        store
+            .add_entry("memory", &filler, Some(MemoryKind::Identity))
+            .unwrap();
+
+        let conn = raw_conn(&paths);
+        let tier_of = |content: &str| -> String {
+            conn.query_row(
+                "SELECT tier FROM memories WHERE content = ?1",
+                rusqlite::params![content],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(tier_of(&loser), "breadcrumb", "failed playbook demoted");
+        assert_eq!(tier_of(&winner), "hot", "successful playbook kept hot");
+    }
+
+    /// dirge-zygq: re-classifying an entry resets its outcome record,
+    /// so a procedural→semantic re-kind can't leave stale counters that
+    /// would skew the (kind-guarded) search tiebreak or a later
+    /// re-promotion to procedural.
+    #[test]
+    fn replace_rekind_resets_outcome_counters() {
+        let (paths, _dir) = temp_project();
+        let store = SqliteMemoryStore::load(&paths).unwrap();
+        store
+            .add_entry(
+                "memory",
+                "deploy rollback steps",
+                Some(MemoryKind::Procedural),
+            )
+            .unwrap();
+        for _ in 0..3 {
+            store
+                .record_outcome("memory", "deploy rollback steps", true)
+                .unwrap();
+        }
+        // Re-classify the playbook as a plain fact.
+        store
+            .replace_entry(
+                "memory",
+                "deploy rollback steps",
+                "deploy rollback steps",
+                Some(MemoryKind::Semantic),
+            )
+            .unwrap();
+
+        let conn = raw_conn(&paths);
+        let (s, f, last, kind): (i64, i64, Option<String>, String) = conn
+            .query_row(
+                "SELECT success_count, failure_count, last_success_at, kind FROM memories
+                 WHERE content = 'deploy rollback steps'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "semantic", "entry was re-kinded");
+        assert_eq!(
+            (s, f, last),
+            (0, 0, None),
+            "re-kind clears the outcome record"
+        );
+    }
+
+    /// Search: among entries of identical BM25 relevance, the
+    /// procedural playbook with the better record ranks first.
+    #[test]
+    fn search_orders_effective_procedural_first() {
+        let (paths, _dir) = temp_project();
+        let store = SqliteMemoryStore::load(&paths).unwrap();
+        // Identical token multiset + length so BM25 rank ties; only the
+        // trailing tag differs and is not a query term.
+        let beta = "rollback playbook token bbbb";
+        let alpha = "rollback playbook token aaaa";
+        store
+            .add_entry("memory", alpha, Some(MemoryKind::Procedural))
+            .unwrap();
+        store
+            .add_entry("memory", beta, Some(MemoryKind::Procedural))
+            .unwrap();
+        // beta has the better record; alpha was added first (so without
+        // the effectiveness tiebreak, insertion/age order would not put
+        // beta first).
+        store.record_outcome("memory", beta, true).unwrap();
+
+        let resp = store.search_entries("rollback playbook token").unwrap();
+        let results = resp["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2, "both playbooks match");
+        assert!(
+            results[0]["content"].as_str().unwrap().contains("bbbb"),
+            "the more-effective playbook ranks first: {results:?}"
+        );
     }
 }
