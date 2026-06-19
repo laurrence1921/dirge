@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-19
+
+### Fixed
+- **Expanded thinking block keeps its box on wrapped lines.** In the Ctrl+O
+  thinking panel, a long thought's continuation rows dropped the `│` bar and
+  started at the left edge, so the text escaped the bounding box. Each line now
+  wraps with the bar carried onto every row. (#459)
+
 ## [0.7.9] - 2026-06-19
 
 ### Added
