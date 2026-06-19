@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use crate::agent::builder;
 use crate::cli::Cli;
-use crate::config::{Config, ProviderEntry};
+use crate::config::{Config, ProviderAuth, ProviderEntry};
 use crate::context::ContextFiles;
 #[cfg(feature = "mcp")]
 use crate::extras::mcp::McpClientManager;
@@ -28,6 +28,14 @@ use super::{
     AnyAgent, AnyAgentInner, AnyClient, AnyModel, client, default_model_for_entry, summarize,
 };
 
+fn openai_api_billing_fallback_key(cli: &Cli) -> Option<&str> {
+    cli.resolved_api_key
+        .as_deref()
+        .filter(|key| !key.is_empty())
+        .or_else(|| cli.api_key.as_deref().filter(|key| !key.is_empty()))
+}
+
+#[cfg(test)]
 pub fn create_client(
     provider_name: &str,
     api_key: Option<&str>,
@@ -43,6 +51,14 @@ pub fn create_client_with_auth(
     default_auth: Option<crate::config::ProviderAuth>,
 ) -> anyhow::Result<AnyClient> {
     client::create_client_with_auth(provider_name, api_key, providers, default_auth)
+}
+
+fn create_role_client(
+    provider_name: &str,
+    providers: &HashMap<String, ProviderEntry>,
+    default_auth: Option<ProviderAuth>,
+) -> anyhow::Result<AnyClient> {
+    create_client_with_auth(provider_name, None, providers, default_auth)
 }
 
 // Arity matches `build_agent_inner` — explicit DI signature kept
@@ -189,6 +205,7 @@ pub async fn build_agent(
         AnyModel::OpenRouter(m) => build_inner!(m, OpenRouter),
         AnyModel::OpenAI(m) => build_inner!(m, OpenAI),
         AnyModel::ChatGptOpenAI(m) => build_inner!(m, ChatGptOpenAI),
+        AnyModel::OpenAICodex(m) => build_inner!(m, OpenAICodex),
         AnyModel::Anthropic(m) => build_inner!(m, Anthropic),
         AnyModel::AnthropicOauth(m) => build_inner!(m, AnthropicOauth),
         AnyModel::Gemini(m) => build_inner!(m, Gemini),
@@ -197,6 +214,34 @@ pub async fn build_agent(
         AnyModel::Ollama(m) => build_inner!(m, Ollama),
         AnyModel::Custom(m) => build_inner!(m, Custom),
     };
+
+    if matches!(parent_model, AnyModel::OpenAICodex(_)) {
+        match client::create_openai_api_key_fallback_client(
+            &provider_name,
+            openai_api_billing_fallback_key(cli),
+            &cfg.providers_map(),
+        ) {
+            Ok(Some(fallback_client)) => {
+                let fallback_model = fallback_client.completion_model(model_name.clone());
+                agent = agent.with_openai_api_key_billing_fallback(fallback_model, ask_tx.clone());
+                tracing::info!(
+                    target: "dirge::provider",
+                    provider = %provider_name,
+                    model = %model_name,
+                    "OpenAI API-key billing fallback armed; requires user confirmation before use",
+                );
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    target: "dirge::provider",
+                    provider = %provider_name,
+                    error = %err,
+                    "failed to arm OpenAI API-key billing fallback",
+                );
+            }
+        }
+    }
 
     // dirge-008x + dirge-nw25: wire the in-loop LLM compaction summarizer.
     // The proactive folds in `run_agent_loop` need a `SummarizeFn` to call
@@ -247,6 +292,7 @@ pub async fn build_agent(
                         &escalation_alias,
                         &escalation_entry,
                         &cfg.providers_map(),
+                        cfg.auth,
                         chunk_timeout,
                         agent.loop_tools(),
                     ) {
@@ -303,18 +349,20 @@ pub async fn build_agent(
     // fallback, so an unset provider means no critic (no cost).
     if cfg.critic_provider.is_some() {
         match cfg.resolve_role(crate::config::ConfigRole::Critic) {
-            Some((alias, entry)) => match build_critic_fn(&alias, &entry, &cfg.providers_map()) {
-                Ok(critic_fn) => {
-                    agent = agent.with_critic(critic_fn);
-                    tracing::info!(target: "dirge::provider", alias = %alias, "in-loop critic wired");
+            Some((alias, entry)) => {
+                match build_critic_fn(&alias, &entry, &cfg.providers_map(), cfg.auth) {
+                    Ok(critic_fn) => {
+                        agent = agent.with_critic(critic_fn);
+                        tracing::info!(target: "dirge::provider", alias = %alias, "in-loop critic wired");
+                    }
+                    Err(e) => {
+                        tracing::error!(target: "dirge::provider", alias = %alias, error = %e, "failed to build critic client; running without critic");
+                        eprintln!(
+                            "warning: critic_provider '{alias}' configured but client build failed: {e}"
+                        );
+                    }
                 }
-                Err(e) => {
-                    tracing::error!(target: "dirge::provider", alias = %alias, error = %e, "failed to build critic client; running without critic");
-                    eprintln!(
-                        "warning: critic_provider '{alias}' configured but client build failed: {e}"
-                    );
-                }
-            },
+            }
             None => {
                 let alias = cfg.critic_provider.clone().unwrap_or_default();
                 eprintln!(
@@ -368,6 +416,7 @@ pub async fn build_agent(
                         &review_alias,
                         &review_entry,
                         &cfg.providers_map(),
+                        cfg.auth,
                         chunk_timeout,
                         agent.loop_tools(),
                     ) {
@@ -453,11 +502,12 @@ fn build_escalation_stream_fn(
     alias: &str,
     entry: &ProviderEntry,
     providers: &HashMap<String, ProviderEntry>,
+    default_auth: Option<ProviderAuth>,
     chunk_timeout: std::time::Duration,
     loop_tools: &[std::sync::Arc<dyn crate::agent::agent_loop::LoopTool>],
 ) -> anyhow::Result<crate::agent::agent_loop::StreamFn> {
     use crate::agent::agent_loop::loop_tool_to_rig_definition;
-    let client = create_client(alias, None, providers)?;
+    let client = create_role_client(alias, providers, default_auth)?;
     let model_name = entry
         .model
         .clone()
@@ -479,8 +529,9 @@ fn build_critic_fn(
     alias: &str,
     entry: &ProviderEntry,
     providers: &HashMap<String, ProviderEntry>,
+    default_auth: Option<ProviderAuth>,
 ) -> anyhow::Result<crate::agent::agent_loop::critic::CriticFn> {
-    let client = std::sync::Arc::new(create_client(alias, None, providers)?);
+    let client = std::sync::Arc::new(create_role_client(alias, providers, default_auth)?);
     let model_name = entry
         .model
         .clone()
@@ -533,7 +584,7 @@ fn build_summarize_fn(
         if let (Some((default_alias, _)), Some((alias, entry))) = (default_role, summ_role)
             && !default_alias.eq_ignore_ascii_case(&alias)
         {
-            match create_client(&alias, None, &cfg.providers_map()) {
+            match create_role_client(&alias, &cfg.providers_map(), cfg.auth) {
                 Ok(client) => {
                     let model_name = entry
                         .model
@@ -574,7 +625,7 @@ fn resolve_subagent_model(cfg: &Config) -> Option<AnyModel> {
     if default_alias.eq_ignore_ascii_case(&alias) {
         return None;
     }
-    match create_client(&alias, None, &cfg.providers_map()) {
+    match create_role_client(&alias, &cfg.providers_map(), cfg.auth) {
         Ok(client) => {
             let model_name = entry
                 .model
@@ -607,12 +658,13 @@ pub fn build_approval_fn(
     alias: &str,
     entry: &ProviderEntry,
     providers: &HashMap<String, ProviderEntry>,
+    default_auth: Option<ProviderAuth>,
 ) -> anyhow::Result<crate::permission::approval::ApprovalFn> {
     use crate::permission::approval::{
         ApprovalDecision, ApprovalRequest, EVALUATOR_PREAMBLE, build_evaluator_prompt,
         parse_decision,
     };
-    let client = std::sync::Arc::new(create_client(alias, None, providers)?);
+    let client = std::sync::Arc::new(create_role_client(alias, providers, default_auth)?);
     let model_name = entry
         .model
         .clone()
@@ -645,11 +697,12 @@ fn build_review_stream_fn(
     alias: &str,
     entry: &ProviderEntry,
     providers: &HashMap<String, ProviderEntry>,
+    default_auth: Option<ProviderAuth>,
     chunk_timeout: std::time::Duration,
     loop_tools: &[std::sync::Arc<dyn crate::agent::agent_loop::LoopTool>],
 ) -> anyhow::Result<(crate::agent::agent_loop::StreamFn, String)> {
     use crate::agent::agent_loop::loop_tool_to_rig_definition;
-    let client = create_client(alias, None, providers)?;
+    let client = create_role_client(alias, providers, default_auth)?;
     let model_name = entry
         .model
         .clone()
@@ -673,7 +726,69 @@ fn build_review_stream_fn(
 #[cfg(test)]
 mod nw25_tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::{Config, ProviderAuth};
+    use clap::Parser;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static CODEX_AUTH_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "dirge_provider_build_{tag}_{}_{}",
+                std::process::id(),
+                uuid::Uuid::new_v4().simple()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set_path(key: &'static str, value: &Path) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: CODEX_AUTH_ENV_LOCK serializes all mutations in this module.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: CODEX_AUTH_ENV_LOCK serializes all mutations in this module.
+            unsafe { std::env::remove_var(key) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: CODEX_AUTH_ENV_LOCK serializes all mutations in this module.
+            unsafe {
+                match &self.old {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
 
     /// dirge-nw25: with no `subagent_provider` configured, the resolver
     /// returns `None` (so no extra client is built and the task tool keeps
@@ -687,5 +802,32 @@ mod nw25_tests {
             resolve_subagent_model(&cfg).is_none(),
             "unset subagent_provider must yield no override model"
         );
+    }
+
+    #[test]
+    fn api_billing_fallback_prefers_resolved_api_key_file_or_stdin_key() {
+        let mut cli = Cli::parse_from(["dirge", "--api-key", "argv-key"]);
+        cli.resolved_api_key = Some("resolved-key".to_string());
+
+        assert_eq!(openai_api_billing_fallback_key(&cli), Some("resolved-key"));
+    }
+
+    #[test]
+    fn role_clients_use_top_level_chatgpt_auth() {
+        let _lock = CODEX_AUTH_ENV_LOCK.lock().unwrap();
+        let dir = TestDir::new("codex_auth");
+        std::fs::write(
+            dir.path().join("auth.json"),
+            r#"{"access_token":"FAKE-CODEX-TOKEN","chatgpt_account_id":"acct-test"}"#,
+        )
+        .unwrap();
+        let _home = EnvGuard::set_path("CODEX_HOME", dir.path());
+        let _access = EnvGuard::remove("CODEX_ACCESS_TOKEN");
+        let _account = EnvGuard::remove("CHATGPT_ACCOUNT_ID");
+
+        let client =
+            create_role_client("openai", &HashMap::new(), Some(ProviderAuth::ChatGpt)).unwrap();
+
+        assert!(matches!(client, AnyClient::ChatGptOpenAI(_)));
     }
 }

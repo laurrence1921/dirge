@@ -227,6 +227,40 @@ Each `providers` entry accepts:
 The aliases on the left of the map become the values you write in
 role-assignment keys.
 
+### OpenAI device-code auth
+
+Run `dirge auth openai` to authorize OpenAI through the device-code flow and
+persist a local OAuth refresh token. Before running the command, enable
+device-code auth in ChatGPT Codex security settings. Dirge prints the OpenAI
+verification URL and user code; the user code is part of the interactive login
+UX, but you should not share it with anyone.
+
+The credential store lives in the Dirge data directory, not the repository or
+program directory:
+
+- Linux default: `~/.local/share/dirge/auth.json`
+- Override: `$DIRGE_DATA_DIR/auth.json`
+
+Successful login persists across Dirge sessions. Delete `auth.json` or revoke
+the OpenAI authorization if you want to force a new login.
+
+For the canonical `openai` provider with no configured `base_url`, a fresh
+stored OAuth credential is treated as subscription auth and is preferred before
+API-key billing. OpenAI-compatible aliases and providers with a custom
+`base_url` keep normal API-key behavior. If no fresh OAuth credential exists,
+Dirge uses the usual API-key sources: explicit CLI keys, key files/stdin, config
+`api_key`, config `api_key_env`, and provider environment variables. If the
+OAuth/Codex request reports subscription quota or model-access exhaustion, Dirge
+asks before switching that request to API-key billing.
+
+Troubleshooting:
+
+- `OpenAI device-code auth is not enabled` or a 404 from the user-code endpoint:
+  enable device-code auth in ChatGPT Codex security settings and rerun
+  `dirge auth openai`.
+- Timeout: complete approval in the browser and rerun the command.
+- Corrupt auth store: fix or remove `auth.json`, then rerun `dirge auth openai`.
+
 ### Anthropic Claude Code OAuth
 
 To use a Claude Pro/Max subscription token instead of an Anthropic API key,

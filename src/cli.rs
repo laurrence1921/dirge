@@ -39,7 +39,7 @@ pub enum AutoConfirmMode {
     No,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(name = "dirge", version, about = "Minimal coding agent")]
 pub struct Cli {
     #[arg(short = 'p', long = "print", help = "Print response and exit")]
@@ -108,6 +108,12 @@ pub struct Cli {
         help = "Read API key from stdin at startup (single line; mutually exclusive with --api-key-file)"
     )]
     pub api_key_stdin: bool,
+
+    /// Populated after startup resolves `--api-key-file` / `--api-key-stdin`.
+    /// Skipped by Clap so rebuild paths can reuse the secret without exposing a
+    /// second CLI option.
+    #[arg(skip)]
+    pub resolved_api_key: Option<String>,
 
     #[arg(long = "max-tokens", help = "Maximum tokens in response")]
     pub max_tokens: Option<u64>,
@@ -275,6 +281,12 @@ pub enum Command {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum AuthAction {
+    /// Log in to OpenAI using device-code auth
+    #[command(
+        name = "openai",
+        long_about = "Log in to OpenAI using device-code auth.\n\nBefore running this command, enable device-code auth in ChatGPT Codex security settings."
+    )]
+    Openai,
     /// Start Anthropic Claude Code OAuth login and persist credentials
     Anthropic,
 }
@@ -377,5 +389,39 @@ impl Cli {
         self.microvm_image
             .clone()
             .or_else(|| cfg.resolve_microvm_image())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn parses_auth_openai_subcommand() {
+        let cli = Cli::try_parse_from(["dirge", "auth", "openai"]).unwrap();
+
+        match cli.command {
+            Some(Command::Auth {
+                action: AuthAction::Openai,
+            }) => {}
+            other => panic!("expected auth openai command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn help_mentions_auth_and_openai_device_code_prerequisite() {
+        let top_level_help = Cli::command().render_help().to_string();
+        assert!(top_level_help.contains("auth"));
+
+        let err = match Cli::try_parse_from(["dirge", "auth", "openai", "--help"]) {
+            Ok(_) => panic!("--help must return a display-help error"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+        let openai_help = err.to_string();
+
+        assert!(openai_help.contains("device-code auth"));
+        assert!(openai_help.contains("ChatGPT Codex security settings"));
     }
 }

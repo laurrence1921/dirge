@@ -33,6 +33,7 @@ macro_rules! dispatch_stream_fn {
             $enum::ChatGptOpenAI($bind) => {
                 __stream_fn($model, $tools, $timeout, $provider, $filter)
             }
+            $enum::OpenAICodex($bind) => __stream_fn($model, $tools, $timeout, $provider, $filter),
             $enum::Anthropic($bind) => __stream_fn($model, $tools, $timeout, $provider, $filter),
             $enum::AnthropicOauth($bind) => {
                 __stream_fn($model, $tools, $timeout, $provider, $filter)

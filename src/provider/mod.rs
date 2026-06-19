@@ -1,6 +1,7 @@
 pub(crate) mod anthropic_http;
 pub(crate) mod anthropic_oauth;
 pub(crate) mod auth;
+mod billing_fallback;
 mod build;
 pub mod client;
 pub(crate) mod codex_http;
@@ -18,7 +19,7 @@ pub use resolve::*;
 #[allow(unused_imports)]
 use crate::sync_util::LockExt;
 use rig::agent::Agent;
-use rig::providers::{anthropic, gemini, ollama, openai, openrouter};
+use rig::providers::{anthropic, chatgpt, gemini, ollama, openai, openrouter};
 
 use crate::agent::tools::ToolCache;
 
@@ -134,6 +135,11 @@ pub struct AnyAgent {
     /// built (test agents, --no-tools, build failure). The provider
     /// is shared with `MemoryTool` via `Arc` — same instance.
     memory_provider: Option<std::sync::Arc<dyn crate::extras::memory_provider::MemoryProvider>>,
+    /// Optional OpenAI API-key model used only after native OpenAI/Codex OAuth
+    /// reports subscription quota/model-access exhaustion and the user confirms
+    /// switching this request to API-key billing.
+    openai_api_key_fallback_model: Option<AnyModel>,
+    api_billing_ask_tx: Option<crate::permission::ask::AskSender>,
     /// dirge-ygm3: a memory tool with the background-review actions
     /// (`mark`/`supersede`) enabled, kept OUT of `loop_tools` so the
     /// interactive agent never sees them. The review runner swaps this in
@@ -148,6 +154,7 @@ pub(crate) enum AnyAgentInner {
     ChatGptOpenAI(
         Agent<openai::responses_api::ResponsesCompletionModel<codex_http::CodexHttpClient>>,
     ),
+    OpenAICodex(Agent<chatgpt::ResponsesCompletionModel>),
     Anthropic(Agent<anthropic::completion::CompletionModel>),
     AnthropicOauth(
         Agent<anthropic::completion::CompletionModel<anthropic_http::AnthropicHttpClient>>,
@@ -190,6 +197,8 @@ impl AnyAgent {
             review_model_name: None,
             bg_store: None,
             memory_provider: None,
+            openai_api_key_fallback_model: None,
+            api_billing_ask_tx: None,
             review_memory_tool: None,
         }
     }
@@ -272,6 +281,16 @@ impl AnyAgent {
         store: crate::agent::tools::background::BackgroundStore,
     ) -> Self {
         self.bg_store = Some(store);
+        self
+    }
+
+    pub(crate) fn with_openai_api_key_billing_fallback(
+        mut self,
+        model: AnyModel,
+        ask_tx: Option<crate::permission::ask::AskSender>,
+    ) -> Self {
+        self.openai_api_key_fallback_model = Some(model);
+        self.api_billing_ask_tx = ask_tx;
         self
     }
 
@@ -387,6 +406,7 @@ impl AnyAgent {
             AnyAgentInner::OpenRouter(_) => "openrouter",
             AnyAgentInner::OpenAI(_) => "openai",
             AnyAgentInner::ChatGptOpenAI(_) => "openai",
+            AnyAgentInner::OpenAICodex(_) => "openai",
             AnyAgentInner::Anthropic(_) => "anthropic",
             AnyAgentInner::AnthropicOauth(_) => "anthropic",
             AnyAgentInner::Gemini(_) => "gemini",

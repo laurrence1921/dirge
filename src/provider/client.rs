@@ -7,24 +7,78 @@
 //! construction.
 
 use std::collections::HashMap;
+use std::fmt;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rig::http_client::HeaderMap;
-use rig::providers::{anthropic, gemini, ollama, openai, openrouter};
+use rig::providers::{anthropic, chatgpt, gemini, ollama, openai, openrouter};
 
+use crate::auth::store::{OpenAiAuthStore, OpenAiOAuthCredential};
 use crate::config::{ProviderAuth, ProviderEntry};
 
 use super::auth::{ProviderAuthHeaders, resolve_auth_headers};
 use super::codex_http::CodexHttpClient;
-use super::{AnyClient, ProviderKind, resolve_api_key, resolve_provider_info};
+use super::{AnyClient, ProviderKind, resolve_api_key_from, resolve_provider_info};
 
 const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
+#[derive(Clone, PartialEq, Eq)]
+enum ProviderCredential {
+    ApiKey(String),
+    ChatGptAuth(String),
+    OpenAiOAuth {
+        access_token: String,
+        account_id: Option<String>,
+    },
+}
+
+impl fmt::Debug for ProviderCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ApiKey(_) => f.debug_tuple("ApiKey").field(&"[REDACTED]").finish(),
+            Self::ChatGptAuth(_) => f.debug_tuple("ChatGptAuth").field(&"[REDACTED]").finish(),
+            Self::OpenAiOAuth { account_id, .. } => f
+                .debug_struct("OpenAiOAuth")
+                .field("access_token", &"[REDACTED]")
+                .field("account_id", account_id)
+                .finish(),
+        }
+    }
+}
+
+impl ProviderCredential {
+    fn into_secret(self) -> String {
+        match self {
+            Self::ApiKey(secret) | Self::ChatGptAuth(secret) => secret,
+            Self::OpenAiOAuth { access_token, .. } => access_token,
+        }
+    }
+
+    fn is_openai_oauth(&self) -> bool {
+        matches!(self, Self::OpenAiOAuth { .. })
+    }
+
+    fn openai_oauth_account_id(&self) -> Option<&str> {
+        match self {
+            Self::OpenAiOAuth { account_id, .. } => account_id.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn create_client(
     provider_name: &str,
     api_key: Option<&str>,
     providers: &HashMap<String, ProviderEntry>,
 ) -> anyhow::Result<AnyClient> {
-    create_client_with_auth(provider_name, api_key, providers, None)
+    create_client_with(
+        provider_name,
+        api_key,
+        providers,
+        |name| std::env::var(name).ok(),
+        load_fresh_openai_oauth,
+    )
 }
 
 pub(crate) fn create_client_with_auth(
@@ -33,16 +87,96 @@ pub(crate) fn create_client_with_auth(
     providers: &HashMap<String, ProviderEntry>,
     default_auth: Option<ProviderAuth>,
 ) -> anyhow::Result<AnyClient> {
-    create_client_with_resolved_auth(provider_name, api_key, providers, default_auth, None)
+    create_client_with_resolved_auth(
+        provider_name,
+        api_key,
+        providers,
+        default_auth,
+        None,
+        |name| std::env::var(name).ok(),
+        load_fresh_openai_oauth,
+    )
 }
 
-fn create_client_with_resolved_auth(
+pub(crate) fn create_openai_api_key_fallback_client(
+    provider_name: &str,
+    api_key: Option<&str>,
+    providers: &HashMap<String, ProviderEntry>,
+) -> anyhow::Result<Option<AnyClient>> {
+    create_openai_api_key_fallback_client_with_env(provider_name, api_key, providers, |name| {
+        std::env::var(name).ok()
+    })
+}
+
+fn create_openai_api_key_fallback_client_with_env<F>(
+    provider_name: &str,
+    api_key: Option<&str>,
+    providers: &HashMap<String, ProviderEntry>,
+    env: F,
+) -> anyhow::Result<Option<AnyClient>>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(info) = resolve_provider_info(provider_name, providers) else {
+        return Ok(None);
+    };
+    if !provider_name.eq_ignore_ascii_case("openai")
+        || info.kind != ProviderKind::OpenAI
+        || info.base_url.is_some()
+    {
+        return Ok(None);
+    }
+
+    let key = if let Some(key) = api_key.filter(|key| !key.is_empty()) {
+        key.to_string()
+    } else if let Some(key) = info.api_key_literal.filter(|key| !key.is_empty()) {
+        key
+    } else {
+        match resolve_api_key_from(info.kind, info.api_key_env.as_deref(), None, env) {
+            Ok(key) => key,
+            Err(_) => return Ok(None),
+        }
+    };
+    let client = openai::CompletionsClient::builder().api_key(&key).build()?;
+    Ok(Some(AnyClient::OpenAI(client)))
+}
+
+#[cfg(test)]
+fn create_client_with<F, G>(
+    provider_name: &str,
+    api_key: Option<&str>,
+    providers: &HashMap<String, ProviderEntry>,
+    env: F,
+    load_openai_oauth: G,
+) -> anyhow::Result<AnyClient>
+where
+    F: Fn(&str) -> Option<String>,
+    G: FnOnce() -> anyhow::Result<Option<OpenAiOAuthCredential>>,
+{
+    create_client_with_resolved_auth(
+        provider_name,
+        api_key,
+        providers,
+        None,
+        None,
+        env,
+        load_openai_oauth,
+    )
+}
+
+fn create_client_with_resolved_auth<F, G>(
     provider_name: &str,
     api_key: Option<&str>,
     providers: &HashMap<String, ProviderEntry>,
     default_auth: Option<ProviderAuth>,
     resolved_auth_headers: Option<ProviderAuthHeaders>,
-) -> anyhow::Result<AnyClient> {
+    env: F,
+    load_openai_oauth: G,
+) -> anyhow::Result<AnyClient>
+where
+    F: Fn(&str) -> Option<String>,
+    G: FnOnce() -> anyhow::Result<Option<OpenAiOAuthCredential>>,
+{
     let info = resolve_provider_info(provider_name, providers).ok_or_else(|| {
         anyhow::anyhow!(
             "Unknown provider: {}. Supported providers: openrouter, openai, anthropic, gemini, deepseek, glm, ollama, custom",
@@ -51,12 +185,8 @@ fn create_client_with_resolved_auth(
     })?;
 
     let auth = info.auth.or(default_auth).unwrap_or(ProviderAuth::ApiKey);
-    // ChatGPT (Codex) auth is only wired for the OpenAI kind — the Codex base
-    // URL, the chatgpt-account-id header, and the request-body shim all live in
-    // the OpenAI arm below. For any other provider the resolved bearer token
-    // would be passed as THAT provider's api_key and sent to its endpoint,
-    // leaking the Codex login token to a third party. A top-level
-    // `auth: chatgpt` (default_auth) applies to every provider, so guard here.
+    // A top-level `auth: chatgpt` applies to every provider. Refuse non-OpenAI
+    // early so a Codex bearer token is never sent to another provider.
     if auth == ProviderAuth::ChatGpt && info.kind != ProviderKind::OpenAI {
         anyhow::bail!(
             "ChatGPT (Codex) auth is only supported for the `openai` provider, not `{provider_name}`. \
@@ -73,22 +203,29 @@ fn create_client_with_resolved_auth(
         (ProviderAuth::ChatGpt, Some(headers)) => Some(headers),
         _ => resolve_auth_headers(auth)?,
     };
-    // Precedence for API-key auth: CLI `--api-key` > `entry.api_key`
-    // (literal or `${VAR}`-expanded) > `entry.api_key_env` > default
-    // env var for the kind > kind-specific fallback env vars.
-    // ChatGPT auth intentionally ignores API-key sources and uses the
-    // Codex bearer token as the OpenAI client credential.
-    let key = if let Some(headers) = auth_headers.as_ref() {
-        headers.bearer_token.clone()
-    } else {
-        match (api_key, info.api_key_literal.as_deref()) {
-            (Some(k), _) if !k.is_empty() => k.to_string(),
-            (_, Some(k)) if !k.is_empty() => k.to_string(),
-            _ => resolve_api_key(info.kind, info.api_key_env.as_deref(), api_key)?,
-        }
-    };
-
     let is_chatgpt_auth = auth == ProviderAuth::ChatGpt;
+
+    let credential = if let Some(headers) = auth_headers.as_ref() {
+        ProviderCredential::ChatGptAuth(headers.bearer_token.clone())
+    } else {
+        // Canonical OpenAI prefers stored Dirge OAuth/Codex subscription auth
+        // before API-key billing. API keys remain the fallback when no fresh
+        // stored OAuth credential exists; non-canonical OpenAI-compatible
+        // aliases and custom base URLs never receive native OAuth tokens.
+        let allow_openai_oauth =
+            provider_name.eq_ignore_ascii_case("openai") && info.base_url.as_deref().is_none();
+        resolve_provider_credential(
+            allow_openai_oauth,
+            info.kind,
+            info.api_key_literal.as_deref(),
+            info.api_key_env.as_deref(),
+            api_key,
+            env,
+            load_openai_oauth,
+        )?
+    };
+    let uses_openai_oauth = credential.is_openai_oauth();
+
     if is_chatgpt_auth {
         let has_account_id = auth_headers
             .as_ref()
@@ -101,6 +238,9 @@ fn create_client_with_resolved_auth(
             );
         }
     }
+
+    let openai_oauth_account_id = credential.openai_oauth_account_id().map(str::to_string);
+    let key = credential.into_secret();
     let base_url = match info.kind {
         ProviderKind::DeepSeek => Some(
             std::env::var("DEEPSEEK_BASE_URL")
@@ -113,6 +253,7 @@ fn create_client_with_resolved_auth(
         ProviderKind::Custom => info
             .base_url
             .or_else(|| std::env::var("CUSTOM_BASE_URL").ok()),
+        ProviderKind::OpenAI if uses_openai_oauth => Some(CHATGPT_CODEX_BASE_URL.to_string()),
         ProviderKind::OpenAI if is_chatgpt_auth => info
             .base_url
             .or_else(|| Some(CHATGPT_CODEX_BASE_URL.to_string())),
@@ -120,9 +261,9 @@ fn create_client_with_resolved_auth(
     };
 
     // A Codex login token is higher-value than a per-provider API key, so it
-    // must never leave over plaintext — `allow_insecure` (which the custom-
-    // provider validator otherwise honors) is NOT respected under ChatGPT auth.
-    if is_chatgpt_auth
+    // must never leave over plaintext. `allow_insecure` is intentionally not
+    // honored for either explicit ChatGPT auth or native Dirge OAuth fallback.
+    if (is_chatgpt_auth || uses_openai_oauth)
         && let Some(url) = base_url.as_deref()
         && !url.starts_with("https://")
     {
@@ -133,25 +274,33 @@ fn create_client_with_resolved_auth(
     }
 
     match info.kind {
-        ProviderKind::OpenAI => {
-            if is_chatgpt_auth {
-                let mut b = openai::Client::builder()
-                    .api_key(&key)
-                    .http_client(CodexHttpClient::default());
-                if let Some(base_url) = &base_url {
-                    b = b.base_url(base_url);
-                }
-                if let Some(headers) = chatgpt_http_headers(auth_headers.as_ref()) {
-                    b = b.http_headers(headers);
-                }
-                Ok(AnyClient::ChatGptOpenAI(b.build()?))
-            } else {
-                let mut b = openai::CompletionsClient::builder().api_key(&key);
-                if let Some(base_url) = &base_url {
-                    b = b.base_url(base_url);
-                }
-                Ok(AnyClient::OpenAI(b.build()?))
+        ProviderKind::OpenAI if uses_openai_oauth => {
+            let b = chatgpt::Client::builder()
+                .api_key(chatgpt::ChatGPTAuth::AccessToken {
+                    access_token: key,
+                    account_id: openai_oauth_account_id,
+                })
+                .base_url(CHATGPT_CODEX_BASE_URL);
+            Ok(AnyClient::OpenAICodex(b.build()?))
+        }
+        ProviderKind::OpenAI if is_chatgpt_auth => {
+            let mut b = openai::Client::builder()
+                .api_key(&key)
+                .http_client(CodexHttpClient::default());
+            if let Some(base_url) = &base_url {
+                b = b.base_url(base_url);
             }
+            if let Some(headers) = chatgpt_http_headers(auth_headers.as_ref()) {
+                b = b.http_headers(headers);
+            }
+            Ok(AnyClient::ChatGptOpenAI(b.build()?))
+        }
+        ProviderKind::OpenAI => {
+            let mut b = openai::CompletionsClient::builder().api_key(&key);
+            if let Some(base_url) = &base_url {
+                b = b.base_url(base_url);
+            }
+            Ok(AnyClient::OpenAI(b.build()?))
         }
         ProviderKind::Anthropic => {
             if auth == ProviderAuth::Anthropic {
@@ -236,12 +385,12 @@ fn create_client_with_chatgpt_auth_headers(
         providers,
         Some(ProviderAuth::ChatGpt),
         Some(headers),
+        |name| std::env::var(name).ok(),
+        load_fresh_openai_oauth,
     )
 }
 
-fn chatgpt_http_headers(
-    auth_headers: Option<&super::auth::ProviderAuthHeaders>,
-) -> Option<HeaderMap> {
+fn chatgpt_http_headers(auth_headers: Option<&ProviderAuthHeaders>) -> Option<HeaderMap> {
     let account_id = auth_headers?
         .chatgpt_account_id
         .as_deref()
@@ -254,22 +403,481 @@ fn chatgpt_http_headers(
     Some(headers)
 }
 
+fn resolve_provider_credential<F, G>(
+    allow_openai_oauth: bool,
+    kind: ProviderKind,
+    api_key_literal: Option<&str>,
+    api_key_env: Option<&str>,
+    cli_key: Option<&str>,
+    env: F,
+    load_openai_oauth: G,
+) -> anyhow::Result<ProviderCredential>
+where
+    F: Fn(&str) -> Option<String>,
+    G: FnOnce() -> anyhow::Result<Option<OpenAiOAuthCredential>>,
+{
+    let mut openai_oauth_error = None;
+    if kind == ProviderKind::OpenAI && allow_openai_oauth {
+        match load_openai_oauth() {
+            Ok(Some(credential)) => {
+                return Ok(ProviderCredential::OpenAiOAuth {
+                    access_token: credential.access_token().to_string(),
+                    account_id: credential.account_id().map(str::to_string),
+                });
+            }
+            Ok(None) => {}
+            Err(err) => openai_oauth_error = Some(err),
+        }
+    }
+    if let Some(key) = cli_key.filter(|k| !k.is_empty()) {
+        return Ok(ProviderCredential::ApiKey(key.to_string()));
+    }
+    if let Some(key) = api_key_literal.filter(|k| !k.is_empty()) {
+        return Ok(ProviderCredential::ApiKey(key.to_string()));
+    }
+
+    resolve_api_key_from(kind, api_key_env, None, env)
+        .map(ProviderCredential::ApiKey)
+        .map_err(|err| {
+            if let Some(openai_oauth_error) = openai_oauth_error {
+                return openai_oauth_error;
+            }
+            if kind == ProviderKind::OpenAI && allow_openai_oauth {
+                anyhow::anyhow!(
+                    "{err} You can also run `dirge auth openai` to use a stored OpenAI OAuth login."
+                )
+            } else {
+                err
+            }
+        })
+}
+
+fn load_fresh_openai_oauth() -> anyhow::Result<Option<OpenAiOAuthCredential>> {
+    fresh_openai_oauth_at(
+        OpenAiAuthStore::default().load_openai()?,
+        current_epoch_ms(),
+    )
+}
+
+fn fresh_openai_oauth_at(
+    credential: Option<OpenAiOAuthCredential>,
+    epoch_ms: i64,
+) -> anyhow::Result<Option<OpenAiOAuthCredential>> {
+    let Some(credential) = credential else {
+        return Ok(None);
+    };
+    if credential.is_fresh_at(epoch_ms) {
+        Ok(Some(credential))
+    } else {
+        anyhow::bail!(
+            "Stored OpenAI OAuth credential is expired; run `dirge auth openai` again or set OPENAI_API_KEY."
+        )
+    }
+}
+
+fn current_epoch_ms() -> i64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
+        Err(_) => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::auth::store::OpenAiOAuthCredential;
+    use crate::config::{ProviderAuth, ProviderEntry};
+    use std::cell::Cell;
     use std::collections::HashMap;
 
-    use crate::config::{ProviderAuth, ProviderEntry};
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
 
-    use super::{
-        CHATGPT_CODEX_BASE_URL, create_client_with_auth, create_client_with_chatgpt_auth_headers,
-        resolve_provider_info,
-    };
+    fn oauth(access_token: &str) -> OpenAiOAuthCredential {
+        oauth_with_account(access_token, None)
+    }
 
-    fn test_chatgpt_headers() -> crate::provider::auth::ProviderAuthHeaders {
-        crate::provider::auth::ProviderAuthHeaders {
+    fn oauth_with_account(access_token: &str, account_id: Option<&str>) -> OpenAiOAuthCredential {
+        OpenAiOAuthCredential::new(
+            access_token,
+            "REFRESH-TOKEN",
+            Some("ID-TOKEN".to_string()),
+            account_id.map(str::to_string),
+            i64::MAX,
+        )
+    }
+
+    fn test_chatgpt_headers() -> ProviderAuthHeaders {
+        ProviderAuthHeaders {
             bearer_token: "test-token".to_string(),
             chatgpt_account_id: Some("acct-test".to_string()),
         }
+    }
+
+    #[test]
+    fn api_key_billing_fallback_client_builds_only_for_canonical_openai() {
+        let client = create_openai_api_key_fallback_client_with_env(
+            "openai",
+            None,
+            &HashMap::new(),
+            |name| (name == "OPENAI_API_KEY").then(|| "env-key".to_string()),
+        )
+        .unwrap()
+        .unwrap();
+
+        let AnyClient::OpenAI(_) = client else {
+            panic!("API-key billing fallback must use the OpenAI API client");
+        };
+    }
+
+    #[test]
+    fn api_key_billing_fallback_skips_openai_base_url_and_aliases() {
+        let configured_openai = HashMap::from([(
+            "openai".to_string(),
+            ProviderEntry {
+                base_url: Some("https://proxy.example.com/v1".to_string()),
+                ..Default::default()
+            },
+        )]);
+        assert!(
+            create_openai_api_key_fallback_client_with_env(
+                "openai",
+                Some("api-key"),
+                &configured_openai,
+                no_env,
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        let alias = HashMap::from([(
+            "local-vllm".to_string(),
+            ProviderEntry {
+                provider_type: Some("openai".to_string()),
+                base_url: Some("http://localhost:11434/v1".to_string()),
+                allow_insecure: true,
+                ..Default::default()
+            },
+        )]);
+        assert!(
+            create_openai_api_key_fallback_client_with_env(
+                "local-vllm",
+                Some("api-key"),
+                &alias,
+                no_env,
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn openai_oauth_wins_over_cli_key_as_subscription_default() {
+        let loaded = Cell::new(false);
+
+        let credential = resolve_provider_credential(
+            true,
+            ProviderKind::OpenAI,
+            None,
+            None,
+            Some("cli-key"),
+            no_env,
+            || {
+                loaded.set(true);
+                Ok(Some(oauth("oauth-token")))
+            },
+        )
+        .unwrap();
+
+        let ProviderCredential::OpenAiOAuth {
+            access_token: token,
+            ..
+        } = credential
+        else {
+            panic!("stored OpenAI OAuth must win over CLI API key billing fallback");
+        };
+        assert_eq!(token, "oauth-token");
+        assert!(
+            loaded.get(),
+            "OAuth-first OpenAI auth must read the Dirge auth store before API-key fallback"
+        );
+    }
+
+    #[test]
+    fn openai_oauth_wins_over_default_env_key_as_subscription_default() {
+        let loaded = Cell::new(false);
+
+        let credential = resolve_provider_credential(
+            true,
+            ProviderKind::OpenAI,
+            None,
+            None,
+            None,
+            |name| (name == "OPENAI_API_KEY").then(|| "env-key".to_string()),
+            || {
+                loaded.set(true);
+                Ok(Some(oauth("oauth-token")))
+            },
+        )
+        .unwrap();
+
+        let ProviderCredential::OpenAiOAuth {
+            access_token: token,
+            ..
+        } = credential
+        else {
+            panic!("stored OpenAI OAuth must win over OPENAI_API_KEY billing fallback");
+        };
+        assert_eq!(token, "oauth-token");
+        assert!(
+            loaded.get(),
+            "OAuth-first OpenAI auth must read the Dirge auth store before OPENAI_API_KEY fallback"
+        );
+    }
+
+    #[test]
+    fn openai_api_key_is_used_when_subscription_oauth_is_absent() {
+        let loaded = Cell::new(false);
+
+        let credential = resolve_provider_credential(
+            true,
+            ProviderKind::OpenAI,
+            None,
+            None,
+            None,
+            |name| (name == "OPENAI_API_KEY").then(|| "env-key".to_string()),
+            || {
+                loaded.set(true);
+                Ok(None)
+            },
+        )
+        .unwrap();
+
+        let ProviderCredential::ApiKey(token) = credential else {
+            panic!("OPENAI_API_KEY remains the fallback when no stored OAuth credential exists");
+        };
+        assert_eq!(token, "env-key");
+        assert!(
+            loaded.get(),
+            "OAuth-first OpenAI auth must check for a stored login before API-key fallback"
+        );
+    }
+
+    #[test]
+    fn expired_openai_oauth_does_not_block_api_key_fallback() {
+        let credential = resolve_provider_credential(
+            true,
+            ProviderKind::OpenAI,
+            None,
+            None,
+            None,
+            |name| (name == "OPENAI_API_KEY").then(|| "env-key".to_string()),
+            || fresh_openai_oauth_at(Some(oauth("ACCESS-TOKEN")), i64::MAX),
+        )
+        .unwrap();
+
+        let ProviderCredential::ApiKey(token) = credential else {
+            panic!("OPENAI_API_KEY must remain fallback when stored OAuth is expired");
+        };
+        assert_eq!(token, "env-key");
+    }
+
+    #[test]
+    fn openai_oauth_credential_carries_account_id_for_codex_requests() {
+        let credential = resolve_provider_credential(
+            true,
+            ProviderKind::OpenAI,
+            None,
+            None,
+            Some("cli-api-key"),
+            no_env,
+            || {
+                Ok(Some(oauth_with_account(
+                    "oauth-token",
+                    Some("acct-provider"),
+                )))
+            },
+        )
+        .unwrap();
+
+        let ProviderCredential::OpenAiOAuth {
+            access_token,
+            account_id,
+        } = credential
+        else {
+            panic!("stored OpenAI OAuth must be selected before API-key billing fallback");
+        };
+        assert_eq!(access_token, "oauth-token");
+        assert_eq!(account_id.as_deref(), Some("acct-provider"));
+    }
+
+    #[test]
+    fn openai_oauth_fallback_builds_chatgpt_codex_client() {
+        let client = create_client_with("openai", None, &HashMap::new(), no_env, || {
+            Ok(Some(oauth("oauth-token")))
+        })
+        .unwrap();
+
+        match client {
+            AnyClient::OpenAICodex(client) => {
+                assert_eq!(client.base_url(), CHATGPT_CODEX_BASE_URL);
+            }
+            _ => panic!("OAuth fallback must use the ChatGPT Codex client"),
+        }
+    }
+
+    #[test]
+    fn configured_openai_base_url_does_not_fallback_to_oauth() {
+        let loaded = Cell::new(false);
+        let providers = HashMap::from([(
+            "openai".to_string(),
+            ProviderEntry {
+                provider_type: Some("openai".to_string()),
+                base_url: Some("https://proxy.invalid/v1".to_string()),
+                ..Default::default()
+            },
+        )]);
+
+        let result = create_client_with("openai", None, &providers, no_env, || {
+            loaded.set(true);
+            Ok(Some(oauth("oauth-token")))
+        });
+        let err = match result {
+            Ok(_) => panic!("configured OpenAI base_url must not use OAuth fallback"),
+            Err(err) => err.to_string(),
+        };
+
+        assert!(err.contains("OPENAI_API_KEY"), "unexpected error: {err}");
+        assert!(
+            !loaded.get(),
+            "configured OpenAI base_url must not read the Dirge OAuth store"
+        );
+    }
+
+    #[test]
+    fn openai_oauth_fallback_maps_openai_default_model_to_codex_default() {
+        let client = create_client_with("openai", None, &HashMap::new(), no_env, || {
+            Ok(Some(oauth("oauth-token")))
+        })
+        .unwrap();
+
+        let model = client.completion_model(crate::provider::default_model_for("openai"));
+
+        match model {
+            crate::provider::AnyModel::OpenAICodex(model) => {
+                assert_eq!(model.model, "gpt-5.5");
+            }
+            _ => panic!("OAuth fallback must build a ChatGPT Codex model"),
+        }
+    }
+
+    #[test]
+    fn oauth_fallback_is_openai_only() {
+        let loaded = Cell::new(false);
+
+        let err = resolve_provider_credential(
+            false,
+            ProviderKind::Anthropic,
+            None,
+            None,
+            None,
+            no_env,
+            || {
+                loaded.set(true);
+                Ok(Some(oauth("oauth-token")))
+            },
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("ANTHROPIC_API_KEY"));
+        assert!(
+            !loaded.get(),
+            "non-OpenAI providers must not read OpenAI auth"
+        );
+    }
+
+    #[test]
+    fn openai_compatible_alias_does_not_fallback_to_oauth() {
+        let loaded = Cell::new(false);
+        let providers = HashMap::from([(
+            "local-vllm".to_string(),
+            ProviderEntry {
+                provider_type: Some("openai".to_string()),
+                base_url: Some("http://localhost:11434/v1".to_string()),
+                allow_insecure: true,
+                ..Default::default()
+            },
+        )]);
+
+        let result = create_client_with("local-vllm", None, &providers, no_env, || {
+            loaded.set(true);
+            Ok(Some(oauth("oauth-token")))
+        });
+        let err = match result {
+            Ok(_) => panic!("OpenAI-compatible custom alias must not use OAuth fallback"),
+            Err(err) => err.to_string(),
+        };
+
+        assert!(err.contains("OPENAI_API_KEY"), "unexpected error: {err}");
+        assert!(
+            !loaded.get(),
+            "OpenAI-compatible custom aliases must not read the Dirge OAuth store"
+        );
+    }
+
+    #[test]
+    fn missing_openai_oauth_fallback_points_to_login_command() {
+        let err = resolve_provider_credential(
+            true,
+            ProviderKind::OpenAI,
+            None,
+            None,
+            None,
+            no_env,
+            || Ok(None),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("OPENAI_API_KEY"));
+        assert!(err.contains("dirge auth openai"));
+    }
+
+    #[test]
+    fn expired_openai_oauth_error_is_actionable_and_redacted() {
+        let err = fresh_openai_oauth_at(Some(oauth("ACCESS-TOKEN")), i64::MAX)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("dirge auth openai"));
+        for secret in ["ACCESS-TOKEN", "REFRESH-TOKEN", "ID-TOKEN"] {
+            assert!(!err.contains(secret), "expired-token error leaked {secret}");
+        }
+    }
+
+    #[test]
+    fn provider_credential_debug_redacts_selected_secrets() {
+        let oauth_debug = format!(
+            "{:?}",
+            ProviderCredential::OpenAiOAuth {
+                access_token: "ACCESS-TOKEN".to_string(),
+                account_id: Some("acct-debug".to_string()),
+            }
+        );
+        let chatgpt_debug = format!(
+            "{:?}",
+            ProviderCredential::ChatGptAuth("CHATGPT-TOKEN".to_string())
+        );
+        let api_key_debug = format!("{:?}", ProviderCredential::ApiKey("API-KEY".to_string()));
+
+        assert!(!oauth_debug.contains("ACCESS-TOKEN"));
+        assert!(!chatgpt_debug.contains("CHATGPT-TOKEN"));
+        assert!(!api_key_debug.contains("API-KEY"));
+        assert!(oauth_debug.contains("[REDACTED]"));
+        assert!(chatgpt_debug.contains("[REDACTED]"));
+        assert!(api_key_debug.contains("[REDACTED]"));
     }
 
     #[test]
@@ -310,8 +918,10 @@ mod tests {
     fn api_key_openai_uses_chat_completions_client() {
         let providers = HashMap::new();
 
-        let client =
-            create_client_with_auth("openai", Some("test-api-key"), &providers, None).unwrap();
+        let client = create_client_with("openai", Some("test-api-key"), &providers, no_env, || {
+            Ok(None)
+        })
+        .unwrap();
 
         let crate::provider::AnyClient::OpenAI(_) = client else {
             panic!("expected API-key OpenAI to use Chat Completions client");
@@ -320,9 +930,6 @@ mod tests {
 
     #[test]
     fn chatgpt_auth_rejected_for_non_openai_provider() {
-        // A top-level `auth: chatgpt` applies to every provider. Selecting a
-        // non-openai one must be refused, not silently send the Codex bearer
-        // token to that provider's endpoint.
         let providers = HashMap::new();
         let msg = match create_client_with_chatgpt_auth_headers(
             "anthropic",
@@ -344,8 +951,6 @@ mod tests {
 
     #[test]
     fn chatgpt_auth_refuses_insecure_base_url_even_with_allow_insecure() {
-        // A Codex token must never go out over http://, even if the user set
-        // allow_insecure (which the custom-provider validator otherwise honors).
         let providers = HashMap::from([(
             "openai".to_string(),
             ProviderEntry {
@@ -406,7 +1011,7 @@ mod tests {
         let result = create_client_with_chatgpt_auth_headers(
             "openai",
             &providers,
-            crate::provider::auth::ProviderAuthHeaders {
+            ProviderAuthHeaders {
                 bearer_token: "test-token".to_string(),
                 chatgpt_account_id: None,
             },

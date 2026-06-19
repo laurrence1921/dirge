@@ -1,4 +1,5 @@
 mod agent;
+mod auth;
 mod cli;
 mod config;
 mod context;
@@ -197,6 +198,15 @@ fn build_channels(cli: &cli::Cli, cfg: &config::Config) -> Channels {
     }
 }
 
+fn command_is_config_free(command: &cli::Command) -> bool {
+    matches!(
+        command,
+        cli::Command::Auth {
+            action: cli::AuthAction::Openai,
+        }
+    )
+}
+
 /// Construct the `LspManager` (if LSP is enabled). Built standalone —
 /// rather than inside `build_channels` — so the host can wire the plugin
 /// LSP responder to it BEFORE plugins are loaded. A plugin that queries
@@ -316,7 +326,7 @@ fn warn_on_stale_resume(session: &session::Session) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    let cli = cli::Cli::parse();
+    let mut cli = cli::Cli::parse();
 
     // Install the off-stream notification channel EARLY so MCP
     // stderr forwarders spawning during `connect_all` (later in
@@ -394,12 +404,32 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::sync::Mutex::new(log_writer))
         .with_ansi(false)
         .init();
+
+    // Auth commands must work even when the user's runtime config is legacy or
+    // invalid; they only need the auth module and local credential store.
+    if let Some(ref command) = cli.command
+        && command_is_config_free(command)
+    {
+        match command {
+            cli::Command::Auth { action } => {
+                auth::command::run_auth_action(action).await?;
+                return Ok(());
+            }
+            cli::Command::Sandbox { .. } => {}
+            #[cfg(feature = "mcp-server")]
+            cli::Command::Mcp { .. } => {}
+        }
+    }
+
     let cfg = config::load();
 
     // Handle subcommands that exit before the TUI starts.
     if let Some(ref command) = cli.command {
         match command {
             cli::Command::Auth { action } => match action {
+                cli::AuthAction::Openai => {
+                    unreachable!("OpenAI auth command handled before config load")
+                }
                 cli::AuthAction::Anthropic => {
                     let path = provider::anthropic_oauth::login_and_persist().await?;
                     println!("Anthropic OAuth credentials saved to {}", path.display());
@@ -1021,6 +1051,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         cli.api_key.clone()
     };
+    cli.resolved_api_key = resolved_key.clone();
 
     let client = provider::create_client_with_auth(
         &provider,
@@ -1164,7 +1195,7 @@ async fn main() -> anyhow::Result<()> {
     if cfg.approval_provider.is_some() {
         match cfg.resolve_role(config::ConfigRole::Approval) {
             Some((alias, entry)) => {
-                match provider::build_approval_fn(&alias, &entry, &cfg.providers_map()) {
+                match provider::build_approval_fn(&alias, &entry, &cfg.providers_map(), cfg.auth) {
                     Ok(f) => {
                         if let Some(perm) = &permission {
                             perm.lock_ignore_poison().set_approval_fn(f);
@@ -1758,5 +1789,29 @@ mod session_id_tests {
         let session = fresh_session();
         let got = session_id_for_agent(&cli, &session);
         assert_eq!(got.as_deref(), Some(session.id.as_str()));
+    }
+
+    #[test]
+    fn auth_command_is_config_free() {
+        let cli = cli::Cli::parse_from(["dirge", "auth", "openai"]);
+        let command = cli.command.as_ref().unwrap();
+
+        assert!(command_is_config_free(command));
+    }
+
+    #[test]
+    fn anthropic_auth_command_still_loads_config() {
+        let cli = cli::Cli::parse_from(["dirge", "auth", "anthropic"]);
+        let command = cli.command.as_ref().unwrap();
+
+        assert!(!command_is_config_free(command));
+    }
+
+    #[test]
+    fn sandbox_command_still_requires_config() {
+        let cli = cli::Cli::parse_from(["dirge", "sandbox", "check"]);
+        let command = cli.command.as_ref().unwrap();
+
+        assert!(!command_is_config_free(command));
     }
 }

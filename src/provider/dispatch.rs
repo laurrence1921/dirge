@@ -10,7 +10,7 @@
 
 use rig::client::CompletionClient;
 use rig::completion::Prompt;
-use rig::providers::{anthropic, gemini, ollama, openai, openrouter};
+use rig::providers::{anthropic, chatgpt, gemini, ollama, openai, openrouter};
 
 use crate::agent::prompt;
 use crate::session::SessionMessage;
@@ -19,10 +19,13 @@ use super::anthropic_http::AnthropicHttpClient;
 use super::codex_http::CodexHttpClient;
 use super::summarize;
 
+const OPENAI_CODEX_OAUTH_DEFAULT_MODEL: &str = "gpt-5.5";
+
 pub enum AnyClient {
     OpenRouter(openrouter::Client),
     OpenAI(openai::CompletionsClient),
     ChatGptOpenAI(openai::Client<CodexHttpClient>),
+    OpenAICodex(chatgpt::Client),
     Anthropic(anthropic::Client),
     AnthropicOauth(anthropic::Client<AnthropicHttpClient>),
     Gemini(gemini::Client),
@@ -38,7 +41,12 @@ impl AnyClient {
         match self {
             AnyClient::OpenRouter(c) => AnyModel::OpenRouter(c.completion_model(name)),
             AnyClient::OpenAI(c) => AnyModel::OpenAI(c.completion_model(name)),
-            AnyClient::ChatGptOpenAI(c) => AnyModel::ChatGptOpenAI(c.completion_model(name)),
+            AnyClient::ChatGptOpenAI(c) => {
+                AnyModel::ChatGptOpenAI(c.completion_model(codex_model_name(name)))
+            }
+            AnyClient::OpenAICodex(c) => {
+                AnyModel::OpenAICodex(c.completion_model(codex_model_name(name)))
+            }
             AnyClient::Anthropic(c) => AnyModel::Anthropic(c.completion_model(name)),
             AnyClient::AnthropicOauth(c) => AnyModel::AnthropicOauth(c.completion_model(name)),
             AnyClient::Gemini(c) => AnyModel::Gemini(c.completion_model(name)),
@@ -130,11 +138,20 @@ impl AnyClient {
     }
 }
 
+fn codex_model_name(name: String) -> String {
+    if name == super::default_model_for("openai") {
+        OPENAI_CODEX_OAUTH_DEFAULT_MODEL.to_string()
+    } else {
+        name
+    }
+}
+
 #[derive(Clone)]
 pub enum AnyModel {
     OpenRouter(openrouter::completion::CompletionModel),
     OpenAI(openai::completion::CompletionModel),
     ChatGptOpenAI(openai::responses_api::ResponsesCompletionModel<CodexHttpClient>),
+    OpenAICodex(chatgpt::ResponsesCompletionModel),
     Anthropic(anthropic::completion::CompletionModel),
     AnthropicOauth(
         anthropic::completion::CompletionModel<super::anthropic_http::AnthropicHttpClient>,
@@ -191,6 +208,7 @@ impl AnyModel {
             AnyModel::OpenRouter(m) => one_shot!(m),
             AnyModel::OpenAI(m) => one_shot!(m),
             AnyModel::ChatGptOpenAI(m) => one_shot!(m),
+            AnyModel::OpenAICodex(m) => one_shot!(m),
             AnyModel::Anthropic(m) => one_shot!(m),
             AnyModel::AnthropicOauth(m) => one_shot!(m),
             AnyModel::Gemini(m) => one_shot!(m),
@@ -218,6 +236,18 @@ impl AnyModel {
         chunk_timeout: std::time::Duration,
         provider_name: Option<String>,
     ) -> crate::agent::agent_loop::StreamFn {
+        self.build_stream_fn_with_filter(tools, chunk_timeout, provider_name, None)
+    }
+
+    pub fn build_stream_fn_with_filter(
+        &self,
+        tools: Vec<rig::completion::ToolDefinition>,
+        chunk_timeout: std::time::Duration,
+        provider_name: Option<String>,
+        tool_def_filter: Option<
+            std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+        >,
+    ) -> crate::agent::agent_loop::StreamFn {
         // dirge-iy20: single provider list in `stream_dispatch`,
         // shared with `AnyAgent::build_stream_fn_with_filter`.
         crate::provider::stream_dispatch::dispatch_stream_fn! {
@@ -226,7 +256,7 @@ impl AnyModel {
             tools = tools,
             timeout = Some(chunk_timeout),
             provider = provider_name,
-            filter = None,
+            filter = tool_def_filter,
         }
     }
 
@@ -240,6 +270,7 @@ impl AnyModel {
             AnyModel::OpenRouter(m) => m.model.clone(),
             AnyModel::OpenAI(m) => m.model.clone(),
             AnyModel::ChatGptOpenAI(m) => m.model.clone(),
+            AnyModel::OpenAICodex(m) => m.model.clone(),
             AnyModel::Anthropic(m) => m.model.clone(),
             AnyModel::AnthropicOauth(m) => m.model.clone(),
             AnyModel::Gemini(m) => m.model.clone(),
