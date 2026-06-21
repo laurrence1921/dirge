@@ -10,5 +10,6 @@ pub mod post_session;
 pub mod prompt;
 pub mod recovery;
 pub mod review;
+pub mod session_digest;
 pub mod runner;
 pub mod tools;

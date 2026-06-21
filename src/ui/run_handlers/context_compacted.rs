@@ -200,7 +200,11 @@ pub(crate) async fn handle_context_compacted(
     // guard), so the more frequent folds under a capped budget don't pile
     // up. Skipped for a prune-only pass (empty summary = nothing folded).
     if !summary.is_empty() {
-        let transcript = crate::agent::review::build_transcript(ctx.session);
+        // dirge-a62g: same deterministic ground-truth preamble as the
+        // session-end path so a compaction fold's review gets it too.
+        let base = crate::agent::review::build_transcript(ctx.session);
+        let transcript =
+            crate::agent::session_digest::review_transcript(ctx.session, Some(&paths.root), base);
         crate::agent::post_session::spawn_post_session(agent.clone(), paths, transcript);
     }
     Ok(())

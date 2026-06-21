@@ -568,7 +568,13 @@ pub(crate) async fn handle_done(
             ctx.tool_calls_buf,
         );
 
-        let transcript = crate::agent::review::build_transcript(ctx.session);
+        // dirge-a62g: prepend a deterministic, model-free ground-truth
+        // digest (files touched, commands run, goal, where we stopped,
+        // git diff --stat) so the review ranks/classifies KNOWN facts
+        // instead of rediscovering them by re-reading the transcript.
+        let base = crate::agent::review::build_transcript(ctx.session);
+        let transcript =
+            crate::agent::session_digest::review_transcript(ctx.session, Some(&paths.root), base);
 
         // dirge-ba0m: unified post-session learning orchestrator.
         // Replaces the three independent fire-and-forget spawns
