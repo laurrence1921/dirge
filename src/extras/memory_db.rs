@@ -1080,10 +1080,8 @@ impl SqliteMemoryStore {
             // only remaining hot rows are the overview, we stop demoting and
             // accept a slight overflow (the overview is tiny and singular).
             let victim = if demote_longterm_first {
-                Self::least_salient_index_where(&hot, |r| {
-                    !is_working_row(r) && !is_overview_row(r)
-                })
-                .or_else(|| Self::least_salient_index_where(&hot, |r| !is_overview_row(r)))
+                Self::least_salient_index_where(&hot, |r| !is_working_row(r) && !is_overview_row(r))
+                    .or_else(|| Self::least_salient_index_where(&hot, |r| !is_overview_row(r)))
             } else {
                 Self::least_salient_index_where(&hot, is_working_row)
                     .or_else(|| Self::least_salient_index_where(&hot, |r| !is_overview_row(r)))
@@ -2276,7 +2274,9 @@ mod tests {
             .unwrap();
         for i in 0..60 {
             let e = format!("fact {i}: {}", "x".repeat(80));
-            store.add_entry("memory", &e, Some(MemoryKind::Semantic)).unwrap();
+            store
+                .add_entry("memory", &e, Some(MemoryKind::Semantic))
+                .unwrap();
         }
         store.refresh_snapshot().unwrap();
         let prompt = store.format_for_system_prompt();
@@ -2303,7 +2303,9 @@ mod tests {
             .unwrap();
         store.refresh_snapshot().unwrap();
         let p = store.format_for_system_prompt();
-        let ov = p.find("<project_overview>").expect("overview block present");
+        let ov = p
+            .find("<project_overview>")
+            .expect("overview block present");
         let pm = p.find("<project_memory>").expect("memory block present");
         assert!(ov < pm, "overview renders before the fact bag");
         // The overview text is not duplicated inside <project_memory>.
