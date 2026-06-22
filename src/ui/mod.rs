@@ -874,7 +874,11 @@ pub async fn run_interactive(
                                 ) else {
                                     unreachable!()
                                 };
-                                let _ = q.req.reply.send(QuestionResponse::Rejected);
+                                if q.answers.is_empty() {
+                                    let _ = q.req.reply.send(QuestionResponse::Rejected);
+                                } else {
+                                    let _ = q.req.reply.send(QuestionResponse::Answered(q.answers));
+                                }
                                 renderer.write_line("", Color::White)?;
                             }
                         }
