@@ -116,6 +116,9 @@ fn language_for_path(path: &Path) -> Option<tree_sitter::Language> {
         #[cfg(feature = "semantic-bash")]
         "sh" | "bash" => Some(tree_sitter_bash::LANGUAGE.into()),
 
+        #[cfg(feature = "semantic-sql")]
+        "sql" => Some(tree_sitter_sequel::LANGUAGE.into()),
+
         _ => None,
     }
 }
