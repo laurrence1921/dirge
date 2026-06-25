@@ -184,6 +184,27 @@ pub(crate) enum CompactionDecision {
     Ready(Box<CompactionRequest>),
 }
 
+/// Fraction (percent) of the usable token budget at which proactive,
+/// pre-send compaction kicks in. Below the hard 100% limit so we compact
+/// BEFORE a send would overflow rather than paying the reactive round-trip.
+pub(crate) const PROACTIVE_COMPACTION_PERCENT: u64 = 85;
+
+/// Whether a proactive (pre-send) compaction is warranted: the current context
+/// plus the `incoming` prompt would cross [`PROACTIVE_COMPACTION_PERCENT`] of
+/// the usable budget (`max_tokens` = context window minus reserve). `total > 0`
+/// skips a fresh session with nothing to compact; the caller still gates on
+/// `compact_enabled`.
+///
+/// This trigger OWNS the proactive decision and uniquely factors `incoming`
+/// (which [`prepare_compaction`] cannot see), so the caller must invoke
+/// `prepare_compaction` with `forced = true`. Otherwise prepare's stricter
+/// within-limits (100%) gate re-rejects everything in the 85–100% band — it
+/// announced "compressing…" then no-op'd, so proactive compaction never ran
+/// (dirge-rz4i).
+pub(crate) fn preemptive_compaction_due(total: u64, incoming: u64, max_tokens: u64) -> bool {
+    total > 0 && total.saturating_add(incoming) > max_tokens * PROACTIVE_COMPACTION_PERCENT / 100
+}
+
 /// dirge-tv3p: the SYNCHRONOUS, on-UI-thread half of compaction — decide
 /// whether/what to compact and build the summarizer prompt. Cheap (token math +
 /// conversation serialization), so it stays on the loop; the slow LLM call it
@@ -205,8 +226,10 @@ pub(crate) fn prepare_compaction(
     let keep_recent = cfg.resolve_keep_recent_tokens();
     let max_tokens = session.context_window.saturating_sub(reserve);
 
-    // Auto-compaction skips when context is within limits; an explicit
-    // `/compact` (forced) compacts anyway. The downstream gates (nothing to
+    // Non-forced reactive callers skip when context is within the hard limit;
+    // an explicit `/compact` AND the proactive pre-send trigger pass
+    // `forced = true` so they compact at their own (85%) threshold without
+    // being re-rejected here (dirge-rz4i). The downstream gates (nothing to
     // compress, summary-larger-than-savings) still apply to both [dirge-fgtj].
     if !forced && session.total_estimated_tokens <= max_tokens {
         renderer.write_line("context within limits, no compression needed", c_agent())?;
@@ -705,6 +728,37 @@ mod tests {
     use super::completion::all_commands;
     use super::*;
     use crate::session::{Session, SessionMessage};
+
+    #[test]
+    fn preemptive_due_fires_in_the_85_to_100_band() {
+        // dirge-rz4i: the user's case — 106.7k used of a 114.7k usable budget
+        // (~93%). 85% of 114_700 = 97_495; total already exceeds it, so a
+        // proactive compaction is due even with a tiny incoming prompt. The
+        // OLD within-limits gate (total <= max) would have no-op'd here.
+        let max_tokens = 114_700;
+        assert!(preemptive_compaction_due(106_700, 50, max_tokens));
+        // And it must be < the hard limit, proving this is the band that
+        // regressed (preemptive fired but prepare refused).
+        assert!(106_700 <= max_tokens);
+    }
+
+    #[test]
+    fn preemptive_due_incoming_prompt_pushes_over() {
+        // Under 85% on its own (90k of 114.7k usable ≈ 78%), but a large
+        // incoming prompt crosses the threshold — the case only the trigger
+        // can see, which is why it must drive the (forced) compaction.
+        let max_tokens = 114_700;
+        assert!(!preemptive_compaction_due(90_000, 0, max_tokens));
+        assert!(preemptive_compaction_due(90_000, 10_000, max_tokens));
+    }
+
+    #[test]
+    fn preemptive_due_below_threshold_and_empty_session() {
+        let max_tokens = 100_000; // 85% = 85_000
+        assert!(!preemptive_compaction_due(80_000, 1_000, max_tokens));
+        // Fresh session (total == 0) never triggers, even with a huge prompt.
+        assert!(!preemptive_compaction_due(0, 1_000_000, max_tokens));
+    }
 
     #[test]
     fn split_command_parts_collapses_extra_whitespace() {

@@ -2577,7 +2577,6 @@ pub async fn run_interactive(
                                 let reserve_for_check = cfg.resolve_reserve_tokens();
                                 let max_tokens_for_check =
                                     session.context_window.saturating_sub(reserve_for_check);
-                                let preemptive_threshold = max_tokens_for_check * 85 / 100;
                                 let est_new_tokens =
                                     crate::session::Session::estimate_tokens(&prompt);
                                 // `compact_enabled = false` opts out of proactive
@@ -2587,11 +2586,11 @@ pub async fn run_interactive(
                                 // stays ungated: it's emergency rescue, not
                                 // proactive, matching the old eager/reactive split.
                                 let preemptive_fired = cfg.resolve_compact_enabled()
-                                    && session
-                                        .total_estimated_tokens
-                                        .saturating_add(est_new_tokens)
-                                        > preemptive_threshold
-                                    && session.total_estimated_tokens > 0;
+                                    && crate::ui::slash::preemptive_compaction_due(
+                                        session.total_estimated_tokens,
+                                        est_new_tokens,
+                                        max_tokens_for_check,
+                                    );
                                 // dirge-tv3p: when preemptive compaction fires,
                                 // run the summarizer OFF-thread (it was a 10-60s
                                 // inline freeze) and defer this turn to the
@@ -2604,8 +2603,13 @@ pub async fn run_interactive(
                                         "▒░ preemptive compaction (context near limit) ░▒",
                                         theme::accent(),
                                     )?;
+                                    // forced=true: the preemptive trigger above
+                                    // already decided (at 85%, factoring the
+                                    // incoming prompt), so bypass prepare's
+                                    // stricter within-limits gate — otherwise it
+                                    // no-ops in the 85–100% band (dirge-rz4i).
                                     match crate::ui::slash::prepare_compaction(
-                                        None, false, &agent, &client, &mut renderer, session, cfg,
+                                        None, true, &agent, &client, &mut renderer, session, cfg,
                                     ) {
                                         Ok(crate::ui::slash::CompactionDecision::Ready(req)) => {
                                             ui.compaction_phase = Some(crate::ui::compaction::spawn(

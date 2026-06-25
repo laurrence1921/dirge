@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-06-24
+
+### Fixed
+- **Proactive compaction now actually runs near the limit.** The pre-send
+  trigger fires at 85% of the usable budget, but `prepare_compaction` re-gated
+  every non-forced call behind a stricter 100% within-limits check — so in the
+  85–100% band the UI announced "preemptive compaction… compressing…" and then
+  printed "context within limits, no compression needed" without compacting,
+  leaving proactive compaction effectively dead until a hard overflow. The
+  trigger now owns the decision (it alone accounts for the incoming prompt) and
+  compacts without being re-gated. (dirge-rz4i)
+
 ## [0.12.1] - 2026-06-24
 
 ### Fixed
