@@ -153,10 +153,14 @@ mod tests {
 
     #[test]
     fn extracts_function() {
-        let src = "CREATE FUNCTION add(a INT, b INT) RETURNS INT AS $$ SELECT a + b $$ LANGUAGE SQL;\n";
+        let src =
+            "CREATE FUNCTION add(a INT, b INT) RETURNS INT AS $$ SELECT a + b $$ LANGUAGE SQL;\n";
         let f = SqlAdapter.extract(&pb("fns.sql"), src).unwrap();
-        assert!(f.symbols.iter().any(|s| s.name == "add"
-            && matches!(s.kind, SymbolKind::Function)));
+        assert!(
+            f.symbols
+                .iter()
+                .any(|s| s.name == "add" && matches!(s.kind, SymbolKind::Function))
+        );
     }
 
     #[test]
@@ -164,10 +168,16 @@ mod tests {
         let src = "CREATE INDEX idx_email ON users(email);\n\
                    CREATE TYPE mood AS ENUM ('happy','sad');\n";
         let f = SqlAdapter.extract(&pb("misc.sql"), src).unwrap();
-        assert!(f.symbols.iter().any(|s| s.name == "idx_email"
-            && matches!(s.kind, SymbolKind::Variable)));
-        assert!(f.symbols.iter().any(|s| s.name == "mood"
-            && matches!(s.kind, SymbolKind::TypeAlias)));
+        assert!(
+            f.symbols
+                .iter()
+                .any(|s| s.name == "idx_email" && matches!(s.kind, SymbolKind::Variable))
+        );
+        assert!(
+            f.symbols
+                .iter()
+                .any(|s| s.name == "mood" && matches!(s.kind, SymbolKind::TypeAlias))
+        );
     }
 
     #[test]
