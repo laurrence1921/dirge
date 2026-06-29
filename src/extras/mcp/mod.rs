@@ -35,6 +35,11 @@ pub struct McpClientManager {
     /// tool-side auto-reconnect (same server → same tools). `std::sync::Mutex`
     /// because the critical sections are sync (no await held).
     tool_cache: std::sync::Mutex<HashMap<String, Vec<rmcp::model::Tool>>>,
+    /// Names of servers whose initial `connect` failed (GH #541). The
+    /// manager still drops the live connection, but recording the name
+    /// lets the info panel surface it as broken (`○`) instead of
+    /// silently omitting it — mirroring how LSP shows broken servers.
+    failed: Vec<String>,
 }
 
 /// Bound on a per-server `list_tools` round-trip (dirge-fn8h). A wedged server
@@ -68,6 +73,7 @@ impl McpClientManager {
 
         let mut connections = HashMap::new();
         let mut reconnect_locks = HashMap::new();
+        let mut failed = Vec::new();
         for (name, result) in connect_results {
             match result {
                 Ok(conn) => {
@@ -76,6 +82,11 @@ impl McpClientManager {
                     reconnect_locks.insert(name, Arc::new(Mutex::new(0u64)));
                 }
                 Err(e) => {
+                    // Record the name so the info panel can surface a
+                    // failed server as broken (GH #541) instead of
+                    // silently omitting it. The live connection is still
+                    // dropped — reconnect keeps working from `configs`.
+                    failed.push(name.clone());
                     // ALSO emit to stderr so users running without
                     // RUST_LOG / --verbose see that an MCP server
                     // failed to register. Without this, configured
@@ -94,6 +105,7 @@ impl McpClientManager {
             reconnect_locks,
             configs: configs.clone(),
             tool_cache: std::sync::Mutex::new(HashMap::new()),
+            failed,
         }
     }
 
@@ -251,6 +263,14 @@ impl McpClientManager {
             .collect()
     }
 
+    /// Names of servers whose initial `connect` failed (GH #541). The
+    /// info panel renders these as broken (`○`) alongside healthy ones,
+    /// so a misconfigured or timed-out server is visible instead of
+    /// silently omitted.
+    pub fn failed_servers(&self) -> Vec<String> {
+        self.failed.clone()
+    }
+
     pub async fn shutdown(self) {
         for (name, conn) in self.connections {
             conn.shutdown().await;
@@ -294,6 +314,26 @@ mod tests {
         assert_eq!(mgr.reconnect_locks.len(), 0);
         assert_eq!(mgr.configs.len(), 2, "configs retained for /mcp reconnect");
         assert!(mgr.connections_snapshot().is_empty());
+    }
+
+    /// GH #541: a server that fails to connect must still be VISIBLE to
+    /// the user. Previously the only signal was a one-line stderr warning,
+    /// and the info panel (which reads only live connections) rendered
+    /// `· (none)` — so a misconfigured / timed-out MCP server was
+    /// completely invisible. The manager now records the names of servers
+    /// that failed their initial connect so the panel can surface them as
+    /// broken (parity with how LSP shows broken servers).
+    #[tokio::test]
+    async fn connect_all_records_failed_server_names() {
+        let mut configs = HashMap::new();
+        configs.insert("bogus-a".to_string(), bogus_server());
+        configs.insert("bogus-b".to_string(), bogus_server());
+
+        let mgr = McpClientManager::connect_all(&configs).await;
+
+        let mut failed = mgr.failed_servers();
+        failed.sort();
+        assert_eq!(failed, vec!["bogus-a".to_string(), "bogus-b".to_string()]);
     }
 
     /// Empty config set → an empty, well-formed manager (no panic, no
