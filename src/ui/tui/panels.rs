@@ -314,14 +314,20 @@ fn paint_idle_card(buf: &mut Buffer, area: Rect, info: &LeftPanelInfo, style: St
         .map(|v| 2 + v.len() as u16 + 1)
         .unwrap_or(0);
 
+    // [AGENTS] — hardcoded placeholder list of running agents.
+    let agent_names = ["researcher", "coder", "planner"];
+    let agents_reserve = 2 + agent_names.len() as u16 + 1;
+
     // [ACTIVITY] — recent tool ticker (newest last). Capped to whatever
-    // vertical room is left after CONTEXT and the reserved GIT box. Only
-    // rendered when at least one content row fits AFTER reserving GIT —
-    // otherwise a forced 1-row activity/idle box would steal GIT's
-    // reserved space and silently drop the [GIT] section on short panels.
+    // vertical room is left after CONTEXT and the reserved GIT/AGENTS
+    // boxes. Only rendered when at least one content row fits AFTER
+    // reserving them — otherwise a forced 1-row activity/idle box would
+    // steal the reserved space and silently drop those sections on short
+    // panels.
     let avail = (area.y + area.height)
         .saturating_sub(area.y + dy)
-        .saturating_sub(git_reserve);
+        .saturating_sub(git_reserve)
+        .saturating_sub(agents_reserve);
     let max_act = avail.saturating_sub(2) as usize; // minus the box borders
     if max_act >= 1 {
         let act_lines: Vec<(String, RColor)> = if info.activity.is_empty() {
@@ -341,6 +347,13 @@ fn paint_idle_card(buf: &mut Buffer, area: Rect, info: &LeftPanelInfo, style: St
     if let Some(lines) = git_lines {
         place(buf, &mut dy, "GIT", lines);
     }
+
+    // [AGENTS] — hardcoded placeholder list of running agents.
+    let agent_lines: Vec<(String, RColor)> = agent_names
+        .iter()
+        .map(|n| (n.to_string(), green))
+        .collect();
+    place(buf, &mut dy, "AGENTS", agent_lines);
 }
 
 fn paint_subagent_list(buf: &mut Buffer, area: Rect, rows: &[SubagentStatusRow]) {
@@ -1092,6 +1105,51 @@ mod tests {
         assert!(dump.contains("GIT"), "git section missing:\n{dump}");
         assert!(dump.contains("main"), "git branch missing:\n{dump}");
         assert!(dump.contains("+1 ~2 ?0"), "git counts missing:\n{dump}");
+    }
+
+    /// LeftPanel idle state paints the AGENTS section (hardcoded
+    /// placeholder names) below GIT.
+    #[test]
+    fn left_panel_idle_paints_agents() {
+        use crate::ui::panel_data::{ContextGauge, GitSnapshot};
+        let info = LeftPanelInfo {
+            context: ContextGauge {
+                used: 12_300,
+                window: 128_000,
+                pct: 80,
+                compactions: 2,
+                fold_soon: true,
+            },
+            activity: vec!["read run.rs".into(), "bash cargo test".into()],
+            git: Some(GitSnapshot {
+                branch: "main".into(),
+                staged: 1,
+                unstaged: 2,
+                untracked: 0,
+                last_commit: "wip".into(),
+            }),
+        };
+        // Taller panel so there's room below CONTEXT/ACTIVITY/GIT for AGENTS.
+        let backend = TestBackend::new(30, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                f.render_widget(LeftPanel::new(&info, &[]), Rect::new(0, 0, 30, 40));
+            })
+            .unwrap();
+        let backend = terminal.backend().clone();
+        let dump: String = (0..40)
+            .map(|y| {
+                (0..30)
+                    .map(|x| backend.buffer().cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(dump.contains("AGENTS"), "agents section missing:\n{dump}");
+        assert!(dump.contains("researcher"), "agent name missing:\n{dump}");
+        assert!(dump.contains("coder"), "agent name missing:\n{dump}");
+        assert!(dump.contains("planner"), "agent name missing:\n{dump}");
     }
 
     /// Regression: on a SHORT panel the GIT section must still render —
