@@ -4058,7 +4058,7 @@ pub async fn run_interactive(
                 use crate::agent::tools::task::SubagentChatEvent as E;
                 apply_subagent_panel_event(&mut ui.subagent_panel_rows, &chat_evt);
                 match chat_evt {
-                    E::Spawn { id, prompt } => {
+                    E::Spawn { id, prompt, .. } => {
                         // Truncate the prompt to a short chat name
                         // so the picker / Ctrl-X cycle reads
                         // cleanly. Use the first 40 chars of the
@@ -4211,13 +4211,9 @@ pub async fn run_interactive(
                 let panel_rows: Vec<crate::ui::renderer::SubagentStatusRow> =
                     ui.subagent_panel_rows
                         .iter()
-                        .map(|(id, (state, prompt, files))| {
-                            crate::ui::renderer::SubagentStatusRow {
-                                id_short: id.chars().take(6).collect(),
-                                state: state.clone(),
-                                prompt_short: prompt.lines().next().unwrap_or("").to_string(),
-                                files: files.clone(),
-                            }
+                        .map(|(id, agent)| crate::ui::renderer::SubagentStatusRow {
+                            id_short: id.chars().take(6).collect(),
+                            agent: agent.clone(),
                         })
                         .collect();
                 renderer.set_subagent_status(panel_rows);

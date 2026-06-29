@@ -28,69 +28,13 @@ pub struct PanelData {
     pub sysload: Option<crate::ui::sysload::SysLoadSnapshot>,
 }
 
-/// dirge-gek: one row in the left-gutter subagent panel. Rendered as
-/// `<status-glyph> <short-id> <truncated-prompt>` so a quick glance
-/// shows what's running. The UI loop rebuilds these from
-/// `bg_store.list()` on each lifecycle event and pushes via
-/// `Renderer::set_subagent_status`.
+/// One row in the left-gutter subagent panel. The `[AGENTS]` box shows
+/// `agent` (e.g. "architect"), falling back to `id_short` when unset.
 #[derive(Debug, Clone, Default)]
 pub struct SubagentStatusRow {
     pub id_short: String,
-    pub state: String,
-    pub prompt_short: String,
-    /// File paths this subagent is known to be working on.
-    /// Extracted from the spawn prompt and updated on completion.
-    pub files: Vec<String>,
-}
-
-/// Heuristic: extract the first few file-path-looking tokens from a
-/// subagent prompt. Splits on whitespace, collects tokens that contain
-/// a `/` or a `.` with a common code extension. Capped at 3 paths so
-/// the panel row stays compact.
-pub fn extract_file_paths_from_prompt(prompt: &str) -> Vec<String> {
-    let mut paths: Vec<String> = Vec::new();
-    for token in prompt.split_whitespace() {
-        let t = token.trim_matches(|c: char| c == ',' || c == ';' || c == ':');
-        if t.is_empty() || paths.len() >= 3 {
-            break;
-        }
-        if t.contains('/') || t.contains('\\') {
-            paths.push(t.to_string());
-        } else if let Some(idx) = t.rfind('.') {
-            let ext = &t[idx..];
-            if matches!(
-                ext,
-                ".rs"
-                    | ".py"
-                    | ".ts"
-                    | ".tsx"
-                    | ".js"
-                    | ".jsx"
-                    | ".go"
-                    | ".java"
-                    | ".rb"
-                    | ".c"
-                    | ".cpp"
-                    | ".h"
-                    | ".hpp"
-                    | ".clj"
-                    | ".cljs"
-                    | ".cljc"
-                    | ".edn"
-                    | ".toml"
-                    | ".yaml"
-                    | ".yml"
-                    | ".json"
-                    | ".md"
-                    | ".txt"
-                    | ".sh"
-                    | ".bash"
-            ) {
-                paths.push(t.to_string());
-            }
-        }
-    }
-    paths
+    /// Agent-profile name (e.g. "architect"); falls back to `id_short` when unset.
+    pub agent: Option<String>,
 }
 
 /// Context-window fill gauge for the left panel's `[CONTEXT]` section.

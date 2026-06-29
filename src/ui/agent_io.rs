@@ -17,7 +17,6 @@ use crate::plugin::PluginManager;
 use crate::session::{self, MessageRole, Session, ToolCallEntry, ToolCallState};
 #[cfg(feature = "plugin")]
 use crate::ui::events::sanitize_output;
-use crate::ui::panel_data;
 use crate::ui::renderer::Renderer;
 #[cfg(feature = "plugin")]
 use crate::ui::theme;
@@ -26,7 +25,7 @@ use crate::ui::theme;
 use crate::ui::colors::parse_plugin_color;
 
 /// Drive the left-panel subagent map from a chat-event:
-///   - `Spawn`            → insert a `"running"` row (oldest at top).
+///   - `Spawn`            → insert the subagent's agent name (oldest at top).
 ///   - `Complete`/`Failed` → REMOVE the row.
 ///
 /// The panel is for in-flight tracking only; the full result for a
@@ -36,14 +35,13 @@ use crate::ui::colors::parse_plugin_color;
 /// panel to accumulate stale `✓`/`✗` rows for every subagent that
 /// ever ran in the session.
 pub(crate) fn apply_subagent_panel_event(
-    rows: &mut indexmap::IndexMap<String, (String, String, Vec<String>)>,
+    rows: &mut indexmap::IndexMap<String, Option<String>>,
     event: &SubagentChatEvent,
 ) {
     use SubagentChatEvent as E;
     match event {
-        E::Spawn { id, prompt } => {
-            let files = panel_data::extract_file_paths_from_prompt(prompt);
-            rows.insert(id.clone(), ("running".to_string(), prompt.clone(), files));
+        E::Spawn { id, agent, .. } => {
+            rows.insert(id.clone(), agent.clone());
         }
         // Terminal events evict the row — the chat tab keeps the
         // full transcript, so leaving the panel row in would just

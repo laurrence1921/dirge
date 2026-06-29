@@ -53,7 +53,7 @@ pub enum SubagentChatEvent {
     /// A new subagent is starting. UI loop creates a chat window
     /// named after a short truncation of the prompt and writes the
     /// prompt as the first line.
-    Spawn { id: String, prompt: String },
+    Spawn { id: String, prompt: String, agent: Option<String> },
     /// Subagent finished successfully. UI loop writes `result` to
     /// the matching chat window.
     Complete { id: String, result: String },
@@ -463,6 +463,7 @@ impl Tool for TaskTool {
             self.emit_chat(SubagentChatEvent::Spawn {
                 id: task_id.clone(),
                 prompt: args.prompt.clone(),
+                agent: args.agent.clone(),
             });
 
             // dirge-781c: per-subagent AbortSignal so `/kill <id>` or
@@ -603,6 +604,7 @@ impl Tool for TaskTool {
             self.emit_chat(SubagentChatEvent::Spawn {
                 id: task_id.clone(),
                 prompt: args.prompt.clone(),
+                agent: args.agent.clone(),
             });
             // dirge-781c: register an AbortSignal so `/kill` / Ctrl+K
             // can interrupt the foreground subagent. Registered for

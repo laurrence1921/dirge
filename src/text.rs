@@ -18,17 +18,6 @@ pub(crate) fn head(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-/// Largest SUFFIX of `s` that fits in `max_bytes` and starts on a char
-/// boundary. Returns all of `s` when it's already within budget. Never
-/// panics. Used for path truncation where the tail (basename) matters.
-pub(crate) fn tail(s: &str, max_bytes: usize) -> &str {
-    let mut start = s.len().saturating_sub(max_bytes);
-    while start < s.len() && !s.is_char_boundary(start) {
-        start += 1;
-    }
-    &s[start..]
-}
-
 /// Largest byte index `<= n` that's on a UTF-8 char boundary. Use to floor a
 /// head-cut so slicing never panics on a multibyte split.
 pub(crate) fn char_boundary_at_or_before(s: &str, n: usize) -> usize {
@@ -162,17 +151,6 @@ mod tests {
         let cut = head(&s, 200); // byte 200 is mid-'世'
         assert!(s.starts_with(cut));
         assert_eq!(cut.len(), 199, "floored below the multibyte char");
-    }
-
-    #[test]
-    fn tail_never_splits_a_multibyte_char() {
-        let s = "café"; // bytes: c a f é(2) -> len 5
-        assert_eq!(tail(s, 2), "é"); // 'é' is the last 2 bytes
-        assert_eq!(tail(s, 3), "fé"); // start 2 is on a boundary ('f')
-        assert_eq!(tail(s, 10), "café");
-        let cjk = "日本語";
-        assert_eq!(tail(cjk, 4), "語"); // last 4 bytes start mid-'本' -> ceil to '語'
-        assert_eq!(tail(cjk, 0), "");
     }
 
     #[test]
