@@ -59,10 +59,10 @@ pub(crate) async fn cmd_help(ctx: &mut SlashCtx<'_>) -> anyhow::Result<()> {
     )?;
 
     renderer.write_line("", c_agent())?;
-    let cmds = crate::ui::slash::slash_command_names();
+    let cmds = crate::ui::slash::slash_command_descriptions();
     renderer.write_line(&format!("slash commands ({}):", cmds.len()), c_agent())?;
-    for cmd in &cmds {
-        renderer.write_line(&format!("  {}", cmd), c_result())?;
+    for (name, desc) in &cmds {
+        renderer.write_line(&format!("  {:<14}  {}", name, desc), c_result())?;
     }
 
     let aliases = crate::ui::slash::aliases::display_entries(ctx.cfg);

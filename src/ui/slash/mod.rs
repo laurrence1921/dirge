@@ -696,11 +696,12 @@ pub async fn handle_slash(
     Ok(())
 }
 
-/// Canonical list of built-in slash commands. **Single source of
-/// truth** consulted by:
-///   * `all_commands()`        — tab completion (feature-gated)
-///   * `is_known_slash_command` — handle_slash's "internal error"
-///     vs "unknown command" branching in the default arm
+/// Canonical list of built-in slash commands paired with their
+/// short `/help` description. **Single source of truth** — both
+/// `slash_command_names()` (tab completion, `is_known_slash_command`)
+/// and `slash_command_descriptions()` (the `/help` render) derive
+/// from this, so adding a command means one entry here plus one
+/// match arm in `handle_slash`. Nothing else.
 ///
 /// **When you add a new slash command to `handle_slash`'s match
 /// arms, add it here too.** A drift in the other direction (listed
@@ -711,65 +712,95 @@ pub async fn handle_slash(
 /// Always-compiled (not feature-gated) because `handle_slash`'s
 /// default arm consults it regardless of the tab-completion
 /// feature.
-pub fn slash_command_names() -> Vec<&'static str> {
+fn slash_commands() -> Vec<(&'static str, &'static str)> {
     let mut cmds = vec![
-        "/agent",
-        "/agents",
-        "/allow",
-        "/btw",
-        "/cache",
-        "/cd",
-        "/clear",
-        "/clone",
-        "/compact",
-        "/compress",
-        "/display",
-        "/fork",
-        "/graph",
-        "/help",
-        "/issues",
-        "/kill",
-        "/memory",
-        "/mode",
-        "/model",
-        "/panel",
-        "/plan",
-        "/plugins",
-        "/prompt",
-        "/quit",
-        "/reasoning",
-        "/regen-prompts",
-        "/retry",
+        ("/agent", "switch to a named agent, or turn agents off"),
+        ("/agents", "list available agents"),
+        ("/allow", "manage the session permission allowlist"),
+        ("/btw", "ask a one-shot side question without disrupting the session"),
+        ("/cache", "show the cumulative prefix-cache hit ratio"),
+        ("/cd", "change the working directory"),
+        ("/clear", "clear the conversation and session state"),
+        ("/clone", "clone the conversation path up to a message"),
+        (
+            "/compact",
+            "summarize and compact the conversation (alias of /compress)",
+        ),
+        ("/compress", "summarize and compact the conversation"),
+        ("/display", "choose which panes (left/main/right) to show"),
+        (
+            "/fork",
+            "fork the conversation at a message; restore the original prompt",
+        ),
+        ("/graph", "query the entity/relation graph"),
+        ("/help", "show this help"),
+        ("/issues", "view the native issue board"),
+        ("/kill", "kill a running subagent"),
+        ("/memory", "reload the memory snapshot mid-session"),
+        ("/mode", "view or set the permission/security mode"),
+        ("/model", "list configured models, or switch to one"),
+        ("/panel", "toggle the side panels on or off"),
+        ("/plan", "run the phased plan workflow on a request"),
+        ("/plugins", "list or load plugins"),
+        ("/prompt", "list, switch, or reset the active prompt layer"),
+        ("/quit", "quit dirge"),
+        ("/reasoning", "toggle reasoning visibility"),
+        (
+            "/regen-prompts",
+            "regenerate built-in prompts and rebuild the agent",
+        ),
+        ("/retry", "edit and resend your last message"),
         #[cfg(unix)]
-        "/sandbox",
-        "/sessions",
-        "/spec",
-        "/tasks",
-        "/toggle",
-        "/tree",
-        "/undo",
-        "/why",
+        ("/sandbox", "attach, snapshot, or reboot the microVM sandbox"),
+        ("/sessions", "list, switch, or delete saved sessions"),
+        ("/spec", "inspect the spec-driven workflow tracker"),
+        ("/tasks", "list subagent chats and background shells"),
+        ("/toggle", "turn a feature (e.g. todo tools) on or off"),
+        ("/tree", "show the conversation tree, or switch to a branch"),
+        ("/undo", "undo the last user/agent message pair"),
+        ("/why", "trace why an operation was allowed or denied"),
     ];
     #[cfg(feature = "git-worktree")]
     {
-        cmds.push("/worktree");
-        cmds.push("/wt-exit");
-        cmds.push("/wt-merge");
+        cmds.push(("/worktree", "create and switch to a new git worktree"));
+        cmds.push(("/wt-exit", "leave a worktree and return to its base"));
+        cmds.push((
+            "/wt-merge",
+            "merge a worktree's work back to its base branch",
+        ));
     }
     #[cfg(feature = "mcp")]
-    cmds.push("/mcp");
+    cmds.push(("/mcp", "list connected MCP servers and their tools"));
     // `/loop` is always dispatched (its handler prints a "requires the
     // 'loop' feature" message when built without it), so it's a KNOWN
     // command regardless of the feature — keep the canonical list in sync
     // (dirge-3p8j). The gated entry made it un-completable / "unknown" in
     // no-loop builds even though the arm handled it.
-    cmds.push("/loop");
+    cmds.push(("/loop", "start, stop, or show a background prompt loop"));
     #[cfg(feature = "dap")]
-    cmds.push("/debug");
+    cmds.push(("/debug", "control the DAP debugger (launch, step, breakpoints)"));
     #[cfg(feature = "dap")]
-    cmds.push("/dap-repl");
-    cmds.sort_unstable();
+    cmds.push((
+        "/dap-repl",
+        "evaluate expressions in the paused debug session",
+    ));
+    cmds.sort_unstable_by_key(|(name, _)| *name);
     cmds
+}
+
+/// Names of the built-in slash commands. Order is inherited from
+/// `slash_commands()` (sorted by name) — do not re-sort here; tab
+/// completion cycles previews in that stable order.
+pub fn slash_command_names() -> Vec<&'static str> {
+    slash_commands()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// `(name, description)` pairs for the `/help` render.
+pub fn slash_command_descriptions() -> Vec<(&'static str, &'static str)> {
+    slash_commands()
 }
 
 /// Returns true if `name` (with leading `/`) is a built-in slash
@@ -1206,5 +1237,23 @@ mod tests {
                 "{name} must appear in slash_command_names() — it's an always-on dispatch arm in handle_slash",
             );
         }
+    }
+
+    /// `slash_commands()` is the single source of truth, so a name
+    /// with no description (or vice versa) can't happen — the only
+    /// residual copy-paste hazard is the same name twice, which would
+    /// silently drop one entry from `/help` and tab completion.
+    #[test]
+    fn slash_commands_have_no_duplicate_names() {
+        let cmds = slash_commands();
+        let total = cmds.len();
+        let mut names: Vec<&str> = cmds.iter().map(|(n, _)| *n).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            total,
+            "duplicate command name in slash_commands()",
+        );
     }
 }
