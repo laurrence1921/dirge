@@ -3,7 +3,7 @@
 # taken on crates.io. The installed BINARY is still `dirge` (see [[bin]]),
 # so users run: `cargo install dirge-agent` then the `dirge` command.
 name = "dirge-agent"
-version = "0.13.9"
+version = "0.14.1"
 edition = "2024"
 # edition 2024 was stabilized in Rust 1.85; pin the MSRV so older
 # toolchains get a clear error instead of a cryptic edition failure.
@@ -305,6 +305,7 @@ yaml-rust2 = "0.11"
 # examples against the user's task to inject the most relevant ones.
 nucleo-matcher = "0.3"
 url = "2"
+vt100 = "0.16.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

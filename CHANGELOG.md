@@ -6,6 +6,59 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-06-29
+
+### Fixed
+- **Fix the `x86_64-unknown-linux-musl` build** (broken in 0.14.0). The new PTY
+  bang-command code cast `TIOCSCTTY` to `c_ulong` for the `ioctl` request arg,
+  which only matches glibc/macOS — musl declares that arg as `c_int`, so the
+  musl release binary (and `cargo install` on musl) failed to compile. Use
+  `as _` so each target infers the right width. (No behavior change on other
+  platforms.)
+
+## [0.14.0] - 2026-06-29
+
+### Added
+- **`!`/`!!` bang commands run on a real PTY.** They reuse the `/sandbox` attach
+  path — suspend the TUI, attach the command to `/dev/tty`, relay I/O, resume —
+  so commands that need terminal input (`gh auth login`, editors, interactive
+  prompts) work instead of hanging to the 120s timeout. Interactive output
+  renders through a vt100 screen parser, so cursor-moving TUIs (arrow-key menus)
+  update in place rather than stacking redraws; the avatar stays idle while you
+  drive the shell. (#544, #546)
+- **`/prompt <name> <text>` switches *and* runs the text.** Previously everything
+  after the prompt name was silently dropped; it now switches to the named
+  prompt and launches a streamed turn on the trailing text (via a
+  `DEFER_PROMPT_RUN` sentinel, gated on the name resolving). (#538)
+- **Clipboard "Copied!" tooltip** in the chat area, bridging the lack of native
+  terminal copy feedback. (#542)
+- **CI clippy gate** — clippy runs with `-D warnings` and the lint backlog was
+  cleared across all feature builds. (#540)
+
+### Changed
+- **`write_todo_list` is backed by the issue board.** The TODOS panel and the
+  end-of-turn nudge were driven by a separate in-memory checklist; they now share
+  the durable issue tracker — a todo *is* an issue. Bulk planning gains the full
+  lifecycle (open/in_progress/blocked/done/cancelled), items match by title
+  across calls (scoped to the session), and omitted items are no longer silently
+  dropped (close one by restating it completed/cancelled). (#539)
+
+### Fixed
+- **Failed MCP servers are visible in the info panel.** A server that failed its
+  initial connect was invisible (rendered as `(none)`); it now shows as broken
+  (`○`), matching how LSP surfaces broken servers. The live connection is still
+  dropped, so `/mcp reconnect` keeps working. (#541)
+- **Stream retries on a mid-tool-call chunk timeout.** A chunk timeout that fired
+  while a tool call was mid-assembly halted the run — prior thinking/text had
+  marked the attempt "committed" and the retry layer refused to replay it. Timeout
+  errors now retry even after content commits, so a single provider stall no
+  longer kills a run on reasoning models that emit thinking before a tool call.
+  (#547)
+- **Agent construction can't wedge on a stuck DB.** The memory, global-memory,
+  and spec-store loads in `build_agent_inner` are now bounded by a 5s timeout
+  (graceful degradation on timeout), so a locked/slow SQLite no longer hangs
+  agent builds — a contributor to the `/prompt`-rebuild hang.
+
 ## [0.13.9] - 2026-06-28
 
 ### Changed

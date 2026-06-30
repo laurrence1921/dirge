@@ -205,15 +205,29 @@ pub(crate) struct UiState {
     /// In-flight non-blocking `/btw` side query (one-shot LLM on a spawned task);
     /// the `btw_phase` arm renders the answer. dirge-nret.
     pub(crate) btw_phase: Option<crate::ui::btw::BtwPhaseHandle>,
-    /// In-flight non-blocking `!cmd` shell command (on a spawned task); the
-    /// `shell_phase` arm renders the output and, for a visible command, feeds it
-    /// to the agent. dirge-x9a3.
-    pub(crate) shell_phase: Option<crate::ui::shell_phase::ShellPhaseHandle>,
     /// In-flight non-blocking `/wt-merge` (git merge on a blocking thread); the
     /// `wt_merge_phase` arm runs the post-merge continuation. dirge-iagk.
     /// Unconditional so the select! arm can be (select! rejects `#[cfg]` arms);
     /// stays `None` in non-worktree builds.
     pub(crate) wt_merge_phase: Option<crate::ui::wt_merge_phase::WtMergePhaseHandle>,
+
+    // ── PTY-backed interactive shell session (!cmd / !!cmd) ──────────
+    /// A live PTY-backed shell session for `!cmd` / `!!cmd` (no terminal
+    /// takeover — the TUI stays live). `Some` while the command runs: raw
+    /// keystrokes are forwarded to the PTY while the shell box is mounted,
+    /// and `Esc` `SIGKILL`s the whole process group. The session resolves on
+    /// its own when the child exits.
+    pub(crate) shell_session: Option<crate::ui::shell_session::ShellSession>,
+    /// VT100 screen parser fed the raw (escapes-intact) PTY output, rendered
+    /// into the live `[shell]` box. A real screen parser (rather than
+    /// concatenating ansi-stripped text) lets cursor-moving apps like
+    /// `gh auth login` redraw in place. None whenever no session is active.
+    pub(crate) shell_parser: Option<vt100::Parser>,
+    /// True once the bottom shell box has replaced the input box (mounted
+    /// after a short grace window so quick commands never flash a box).
+    pub(crate) shell_box_visible: bool,
+    /// Mount deadline; `Some` from spawn until the box mounts (grace window).
+    pub(crate) shell_mount_deadline: Option<std::time::Instant>,
 
     // ── Chats / subagents ────────────────────────────────────────────
     /// Per-chat-tab UI state (response/reasoning/chamber buffers).
@@ -415,8 +429,11 @@ impl UiState {
             compaction_phase: None,
             review_phase: None,
             btw_phase: None,
-            shell_phase: None,
             wt_merge_phase: None,
+            shell_session: None,
+            shell_parser: None,
+            shell_box_visible: false,
+            shell_mount_deadline: None,
             active_plan: None,
 
             chat_ui_states: vec![ChatUiState::empty()],

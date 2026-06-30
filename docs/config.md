@@ -594,7 +594,7 @@ above is the one exception with richer per-provider precedence;
 | Field | Default | What it bounds |
 |---|---|---|
 | `stream_chunk_secs` | 300 | Per-chunk read deadline for a streaming LLM response (fallback for the per-provider key above) |
-| `tool_call_gap_secs` | 30 | Stall window while a tool call is mid-assembly in the stream |
+| `tool_call_gap_secs` | 60 | Stall window while a tool call is mid-assembly in the stream. A timeout here is retried automatically (the partial, incomplete tool call is discarded and the request restarted); raise it only if your provider legitimately pauses longer than 60s between tool-call deltas. |
 | `mcp_call_secs` | 120 | Total budget for one MCP tool call, including reconnect + retry |
 | `mcp_init_secs` | 10 | MCP server `initialize` handshake |
 | `lsp_request_secs` | 30 | Any non-`initialize` LSP request |

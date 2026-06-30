@@ -42,7 +42,7 @@ pub(crate) async fn cmd_help(ctx: &mut SlashCtx<'_>) -> anyhow::Result<()> {
         c_result(),
     )?;
     renderer.write_line(
-        "  ! / !! cmd              run shell command (visible / invisible)",
+        "  ! / !! cmd              run shell command interactively (visible=feed agent / invisible=live only)",
         c_result(),
     )?;
     renderer.write_line(
