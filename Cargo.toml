@@ -77,6 +77,7 @@ default = [
     'semantic-cpp',
     'semantic-elixir',
     'semantic-sql',
+    'semantic-dafny',
     'slash-completion',
     'mcp-server',
 ]
@@ -105,6 +106,7 @@ windows-default = [
     'semantic-cpp',
     'semantic-elixir',
     'semantic-sql',
+    'semantic-dafny',
     'slash-completion',
     'mcp-server',
 ]
@@ -134,6 +136,7 @@ semantic-c = ["semantic", "dep:tree-sitter-c"]
 semantic-cpp = ["semantic", "dep:tree-sitter-cpp"]
 semantic-elixir = ["semantic", "dep:tree-sitter-elixir"]
 semantic-sql = ["semantic", "dep:tree-sitter-sequel"]
+semantic-dafny = ["semantic", "dep:tree-sitter-dafny"]
 plugin = ["dep:janetrs"]
 lsp = ["dep:lsp-types"]
 dap = ["dep:which", "dep:dap"]
@@ -267,6 +270,7 @@ indexmap = "2"
 lsp-types = { version = "0.97", optional = true }
 tree-sitter-elixir = { version = "0.3.5", optional = true }
 tree-sitter-sequel = { version = "0.3", optional = true }
+tree-sitter-dafny = { version = "0.1", optional = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 # DAP (Debug Adapter Protocol) — optional feature for driving
 # debuggers (lldb-dap, dlv, debugpy, node) to fix crashes instead

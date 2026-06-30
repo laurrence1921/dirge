@@ -68,6 +68,9 @@ impl SemanticManager {
         #[cfg(feature = "semantic-sql")]
         adapters.push(Box::new(adapters::SqlAdapter));
 
+        #[cfg(feature = "semantic-dafny")]
+        adapters.push(Box::new(adapters::DafnyAdapter));
+
         let registry = Arc::new(adapters::AdapterRegistry::new(adapters));
         let index = Arc::new(RwLock::new(SymbolIndex::new(registry)));
 
