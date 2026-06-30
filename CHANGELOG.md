@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-06-29
+
+### Fixed
+- **Fix the `x86_64-unknown-linux-musl` build** (broken in 0.14.0). The new PTY
+  bang-command code cast `TIOCSCTTY` to `c_ulong` for the `ioctl` request arg,
+  which only matches glibc/macOS — musl declares that arg as `c_int`, so the
+  musl release binary (and `cargo install` on musl) failed to compile. Use
+  `as _` so each target infers the right width. (No behavior change on other
+  platforms.)
+
 ## [0.14.0] - 2026-06-29
 
 ### Added

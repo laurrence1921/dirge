@@ -109,7 +109,9 @@ pub(crate) fn spawn(
             }
             // fd 0 is the slave (set up before pre_exec). Acquire it as the
             // controlling terminal so ISIG/SIGINT and job control work.
-            let _ = libc::ioctl(0, libc::TIOCSCTTY as libc::c_ulong, 0);
+            // `ioctl`'s request arg is `c_ulong` on glibc/macOS but `c_int` on
+            // musl — `as _` lets each target infer the right width.
+            let _ = libc::ioctl(0, libc::TIOCSCTTY as _, 0);
             Ok(())
         });
     }
