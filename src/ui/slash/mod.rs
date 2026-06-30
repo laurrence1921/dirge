@@ -717,7 +717,10 @@ fn slash_commands() -> Vec<(&'static str, &'static str)> {
         ("/agent", "switch to a named agent, or turn agents off"),
         ("/agents", "list available agents"),
         ("/allow", "manage the session permission allowlist"),
-        ("/btw", "ask a one-shot side question without disrupting the session"),
+        (
+            "/btw",
+            "ask a one-shot side question without disrupting the session",
+        ),
         ("/cache", "show the cumulative prefix-cache hit ratio"),
         ("/cd", "change the working directory"),
         ("/clear", "clear the conversation and session state"),
@@ -751,7 +754,10 @@ fn slash_commands() -> Vec<(&'static str, &'static str)> {
         ),
         ("/retry", "edit and resend your last message"),
         #[cfg(unix)]
-        ("/sandbox", "attach, snapshot, or reboot the microVM sandbox"),
+        (
+            "/sandbox",
+            "attach, snapshot, or reboot the microVM sandbox",
+        ),
         ("/sessions", "list, switch, or delete saved sessions"),
         ("/spec", "inspect the spec-driven workflow tracker"),
         ("/tasks", "list subagent chats and background shells"),
@@ -778,7 +784,10 @@ fn slash_commands() -> Vec<(&'static str, &'static str)> {
     // no-loop builds even though the arm handled it.
     cmds.push(("/loop", "start, stop, or show a background prompt loop"));
     #[cfg(feature = "dap")]
-    cmds.push(("/debug", "control the DAP debugger (launch, step, breakpoints)"));
+    cmds.push((
+        "/debug",
+        "control the DAP debugger (launch, step, breakpoints)",
+    ));
     #[cfg(feature = "dap")]
     cmds.push((
         "/dap-repl",
@@ -792,10 +801,7 @@ fn slash_commands() -> Vec<(&'static str, &'static str)> {
 /// `slash_commands()` (sorted by name) — do not re-sort here; tab
 /// completion cycles previews in that stable order.
 pub fn slash_command_names() -> Vec<&'static str> {
-    slash_commands()
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect()
+    slash_commands().into_iter().map(|(name, _)| name).collect()
 }
 
 /// `(name, description)` pairs for the `/help` render.
