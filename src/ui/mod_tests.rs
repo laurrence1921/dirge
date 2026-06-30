@@ -15,7 +15,7 @@ use crate::ui::search_rewind::update_search;
 
 use crate::agent::tools::task::SubagentChatEvent as E;
 
-/// Spawn → row appears in "running" state with the prompt.
+/// Spawn → row carries the subagent's agent name.
 #[test]
 fn subagent_panel_spawn_inserts_running_row() {
     let mut rows = indexmap::IndexMap::new();
@@ -24,12 +24,12 @@ fn subagent_panel_spawn_inserts_running_row() {
         &E::Spawn {
             id: "abc123".into(),
             prompt: "build the binary".into(),
+            agent: Some("dev".into()),
         },
     );
     assert_eq!(rows.len(), 1);
-    let (state, prompt, _files) = rows.get("abc123").unwrap();
-    assert_eq!(state, "running");
-    assert_eq!(prompt, "build the binary");
+    let agent = rows.get("abc123").unwrap();
+    assert_eq!(agent, &Some("dev".to_string()));
 }
 
 /// Complete → row is REMOVED (the bug being fixed). Previously
@@ -43,6 +43,7 @@ fn subagent_panel_complete_removes_row() {
         &E::Spawn {
             id: "abc123".into(),
             prompt: "build the binary".into(),
+            agent: None,
         },
     );
     apply_subagent_panel_event(
@@ -64,6 +65,7 @@ fn subagent_panel_failed_removes_row() {
         &E::Spawn {
             id: "xyz789".into(),
             prompt: "run tests".into(),
+            agent: None,
         },
     );
     apply_subagent_panel_event(
@@ -87,6 +89,7 @@ fn subagent_panel_mixed_lifecycle_preserves_order() {
             &E::Spawn {
                 id: id.into(),
                 prompt: format!("task {id}"),
+                agent: None,
             },
         );
     }

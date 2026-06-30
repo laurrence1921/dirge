@@ -161,44 +161,7 @@ impl<'a> Widget for LeftPanel<'a> {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        if self.subagents.is_empty() {
-            paint_idle_card(buf, area, self.info, self.style);
-            return;
-        }
-        // Running subagents render BELOW the vitals (CONTEXT/ACTIVITY/GIT),
-        // not in place of them. Reserve the subagents' natural height,
-        // capped at ~half the panel so the vitals always keep room; the
-        // vitals lay out into the top region and self-clip.
-        let natural_sub: u16 = LEFT_PANEL_TOP_PAD
-            + self
-                .subagents
-                .iter()
-                .map(|r| 2 + r.files.len() as u16)
-                .sum::<u16>();
-        let sub_h = natural_sub.min(area.height / 2);
-        if sub_h == 0 {
-            // Panel too short to host both — keep the vitals.
-            paint_idle_card(buf, area, self.info, self.style);
-            return;
-        }
-        let vitals_h = area.height - sub_h;
-        paint_idle_card(
-            buf,
-            Rect::new(area.x, area.y, area.width, vitals_h),
-            self.info,
-            self.style,
-        );
-        // Subagent region: a dim "agents" label on its pad row, then the
-        // status rows (paint_subagent_list starts content one row down).
-        let sub_area = Rect::new(area.x, area.y + vitals_h, area.width, sub_h);
-        buf.set_stringn(
-            sub_area.x,
-            sub_area.y,
-            "── agents ──",
-            sub_area.width as usize,
-            Style::default().fg(RColor::DarkGray),
-        );
-        paint_subagent_list(buf, sub_area, self.subagents);
+        paint_idle_card(buf, area, self.info, self.subagents, self.style);
     }
 }
 
@@ -216,7 +179,13 @@ fn kfmt(n: u64) -> String {
     }
 }
 
-fn paint_idle_card(buf: &mut Buffer, area: Rect, info: &LeftPanelInfo, style: Style) {
+fn paint_idle_card(
+    buf: &mut Buffer,
+    area: Rect,
+    info: &LeftPanelInfo,
+    subagents: &[SubagentStatusRow],
+    style: Style,
+) {
     let dim = RColor::DarkGray;
     let warn = RColor::Yellow;
     let green = RColor::Green;
@@ -314,14 +283,28 @@ fn paint_idle_card(buf: &mut Buffer, area: Rect, info: &LeftPanelInfo, style: St
         .map(|v| 2 + v.len() as u16 + 1)
         .unwrap_or(0);
 
+    // [AGENTS] — live subagents (green) when any are running, else the
+    // empty-state placeholder row, matching the right panel's boxes.
+    let agent_lines: Vec<(String, RColor)> = if subagents.is_empty() {
+        vec![("· (none)".to_string(), dim)]
+    } else {
+        subagents
+            .iter()
+            .map(|r| (r.agent.clone().unwrap_or_else(|| r.id_short.clone()), green))
+            .collect()
+    };
+    let agents_reserve = 2 + agent_lines.len() as u16 + 1;
+
     // [ACTIVITY] — recent tool ticker (newest last). Capped to whatever
-    // vertical room is left after CONTEXT and the reserved GIT box. Only
-    // rendered when at least one content row fits AFTER reserving GIT —
-    // otherwise a forced 1-row activity/idle box would steal GIT's
-    // reserved space and silently drop the [GIT] section on short panels.
+    // vertical room is left after CONTEXT and the reserved GIT/AGENTS
+    // boxes. Only rendered when at least one content row fits AFTER
+    // reserving them — otherwise a forced 1-row activity/idle box would
+    // steal the reserved space and silently drop those sections on short
+    // panels.
     let avail = (area.y + area.height)
         .saturating_sub(area.y + dy)
-        .saturating_sub(git_reserve);
+        .saturating_sub(git_reserve)
+        .saturating_sub(agents_reserve);
     let max_act = avail.saturating_sub(2) as usize; // minus the box borders
     if max_act >= 1 {
         let act_lines: Vec<(String, RColor)> = if info.activity.is_empty() {
@@ -341,81 +324,9 @@ fn paint_idle_card(buf: &mut Buffer, area: Rect, info: &LeftPanelInfo, style: St
     if let Some(lines) = git_lines {
         place(buf, &mut dy, "GIT", lines);
     }
-}
 
-fn paint_subagent_list(buf: &mut Buffer, area: Rect, rows: &[SubagentStatusRow]) {
-    let dim = Style::default().fg(RColor::DarkGray);
-    let agent = Style::default().fg(RColor::Green);
-    let err = Style::default().fg(RColor::Red);
-    let file_style = Style::default().fg(RColor::DarkGray);
-
-    // Format: hash line + prompt line (+ file lines if present).
-    // Reserve one trailing cell so text doesn't run into the
-    // chat-frame divider on the right.
-    let id_indent = 3_u16; // indent for hash line after glyph
-    let file_indent = 5_u16; // indent for file lines under hash
-    let trailing_pad = 1_usize;
-    let cap_rows = area.height.saturating_sub(LEFT_PANEL_TOP_PAD) as usize;
-    let mut dy: u16 = LEFT_PANEL_TOP_PAD;
-    for row in rows {
-        let file_lines = &row.files;
-        let row_height = 2_u16 + file_lines.len() as u16;
-        if (dy + row_height - LEFT_PANEL_TOP_PAD) as usize > cap_rows {
-            break;
-        }
-        let (glyph, style) = match row.state.as_str() {
-            "running" => ("⋯", agent),
-            "completed" => ("✓", agent),
-            "failed" => ("✗", err),
-            _ => ("·", dim),
-        };
-        // Hash line: glyph + " ..." + last 6 chars of id_short.
-        let id_tail: String = row
-            .id_short
-            .chars()
-            .rev()
-            .take(6)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        let hash_line = format!("{} ...{}", glyph, id_tail);
-        let hash_w = (area.width as usize).saturating_sub(trailing_pad);
-        buf.set_stringn(area.x, area.y + dy, hash_line, hash_w, style);
-        // Prompt line: indented, dim, truncated to fit width.
-        let prompt_avail = (area.width as usize)
-            .saturating_sub(id_indent as usize)
-            .saturating_sub(trailing_pad);
-        let prompt_field: String = row.prompt_short.chars().take(prompt_avail).collect();
-        buf.set_stringn(
-            area.x + id_indent,
-            area.y + dy + 1,
-            prompt_field,
-            prompt_avail,
-            dim,
-        );
-        dy += 2;
-        // File lines: indented further, dim, one per file.
-        for file in file_lines {
-            let file_avail = (area.width as usize)
-                .saturating_sub(file_indent as usize)
-                .saturating_sub(trailing_pad);
-            let file_field: String = if file.len() <= file_avail {
-                file.clone()
-            } else {
-                // Left-truncate to preserve basename.
-                format!("…{}", crate::text::tail(file, file_avail.saturating_sub(1)))
-            };
-            buf.set_stringn(
-                area.x + file_indent,
-                area.y + dy,
-                file_field,
-                file_avail,
-                file_style,
-            );
-            dy += 1;
-        }
-    }
+    // [AGENTS]
+    place(buf, &mut dy, "AGENTS", agent_lines);
 }
 
 /// Right panel widget. Stacks sub-panels vertically in this order:
@@ -1094,6 +1005,120 @@ mod tests {
         assert!(dump.contains("+1 ~2 ?0"), "git counts missing:\n{dump}");
     }
 
+    /// LeftPanel idle state (no subagents) paints the AGENTS section as
+    /// the empty-state placeholder, matching the right panel's boxes.
+    #[test]
+    fn left_panel_idle_paints_agents() {
+        use crate::ui::panel_data::{ContextGauge, GitSnapshot};
+        let info = LeftPanelInfo {
+            context: ContextGauge {
+                used: 12_300,
+                window: 128_000,
+                pct: 80,
+                compactions: 2,
+                fold_soon: true,
+            },
+            activity: vec!["read run.rs".into(), "bash cargo test".into()],
+            git: Some(GitSnapshot {
+                branch: "main".into(),
+                staged: 1,
+                unstaged: 2,
+                untracked: 0,
+                last_commit: "wip".into(),
+            }),
+        };
+        // Taller panel so there's room below CONTEXT/ACTIVITY/GIT for AGENTS.
+        let backend = TestBackend::new(30, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                f.render_widget(LeftPanel::new(&info, &[]), Rect::new(0, 0, 30, 40));
+            })
+            .unwrap();
+        let backend = terminal.backend().clone();
+        let dump: String = (0..40)
+            .map(|y| {
+                (0..30)
+                    .map(|x| backend.buffer().cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(dump.contains("AGENTS"), "agents section missing:\n{dump}");
+        assert!(
+            dump.contains("· (none)"),
+            "idle AGENTS box should show the empty-state placeholder:\n{dump}"
+        );
+    }
+
+    /// LeftPanel with running subagents lists them inside the AGENTS box
+    /// instead of the stale hardcoded placeholder names.
+    #[test]
+    fn left_panel_idle_paints_running_agents() {
+        use crate::ui::panel_data::ContextGauge;
+        let info = LeftPanelInfo {
+            context: ContextGauge {
+                used: 5000,
+                window: 128_000,
+                pct: 4,
+                compactions: 0,
+                fold_soon: false,
+            },
+            activity: vec!["read x.rs".into()],
+            git: None,
+        };
+        let subs = vec![
+            SubagentStatusRow {
+                id_short: "abc123".into(),
+                agent: Some("architect".into()),
+            },
+            SubagentStatusRow {
+                id_short: "zzz999".into(),
+                agent: None,
+            },
+        ];
+        let backend = TestBackend::new(30, 50);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| f.render_widget(LeftPanel::new(&info, &subs), Rect::new(0, 0, 30, 50)))
+            .unwrap();
+        let backend = terminal.backend().clone();
+        let rows: Vec<String> = (0..50)
+            .map(|y| {
+                (0..30)
+                    .map(|x| backend.buffer().cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        let dump = rows.join("\n");
+        assert!(dump.contains("AGENTS"), "agents section missing:\n{dump}");
+        assert!(
+            !dump.contains("researcher"),
+            "stale placeholder name should not appear:\n{dump}"
+        );
+
+        // Isolate the [AGENTS] box body: rows between the "AGENTS" header
+        // (top border) and its bottom border ╰, so assertions target only
+        // the box content, not the title bar.
+        let header = rows.iter().position(|r| r.contains("AGENTS")).unwrap();
+        let bottom = (header + 1..rows.len())
+            .find(|&y| rows[y].contains('╰'))
+            .unwrap();
+        let box_body: String = rows[header + 1..bottom].join("\n");
+        assert!(
+            box_body.contains("architect"),
+            "agent-profile name should appear in the AGENTS box:\n{dump}"
+        );
+        assert!(
+            box_body.contains("zzz999"),
+            "id_short fallback should appear for an unnamed subagent:\n{dump}"
+        );
+        assert!(
+            !box_body.contains("build the parser"),
+            "prompt prose must NOT appear in the AGENTS box:\n{box_body}"
+        );
+    }
+
     /// Regression: on a SHORT panel the GIT section must still render —
     /// the ACTIVITY box must not steal GIT's reserved rows.
     #[test]
@@ -1135,67 +1160,6 @@ mod tests {
         assert!(
             dump.contains("GIT") && dump.contains("main"),
             "GIT dropped on a short panel:\n{dump}"
-        );
-    }
-
-    /// LeftPanel with subagents renders the vitals AND the subagent rows
-    /// BELOW them (subagents no longer replace the vitals).
-    #[test]
-    fn left_panel_subagents_render_below_vitals() {
-        use crate::ui::panel_data::ContextGauge;
-        let info = LeftPanelInfo {
-            context: ContextGauge {
-                used: 5000,
-                window: 128_000,
-                pct: 4,
-                compactions: 0,
-                fold_soon: false,
-            },
-            activity: vec!["read x.rs".into()],
-            git: None,
-        };
-        let subs = vec![
-            SubagentStatusRow {
-                id_short: "abc123".into(),
-                state: "running".into(),
-                prompt_short: "do thing".into(),
-                files: vec!["src/main.rs".into()],
-            },
-            SubagentStatusRow {
-                id_short: "def456".into(),
-                state: "completed".into(),
-                prompt_short: "done".into(),
-                files: vec![],
-            },
-        ];
-        let backend = TestBackend::new(30, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| f.render_widget(LeftPanel::new(&info, &subs), Rect::new(0, 0, 30, 24)))
-            .unwrap();
-        let backend = terminal.backend().clone();
-        let rows: Vec<String> = (0..24)
-            .map(|y| {
-                (0..30)
-                    .map(|x| backend.buffer().cell((x, y)).unwrap().symbol().to_string())
-                    .collect()
-            })
-            .collect();
-        let dump = rows.join("\n");
-        // Vitals still present.
-        assert!(dump.contains("CONTEXT"), "vitals dropped:\n{dump}");
-        // Subagents present, below the vitals, under the "agents" header.
-        assert!(dump.contains("agents"), "agents header missing:\n{dump}");
-        assert!(dump.contains("...abc123"), "subagent row missing:\n{dump}");
-        assert!(
-            dump.contains("do thing"),
-            "subagent prompt missing:\n{dump}"
-        );
-        let agents_y = rows.iter().position(|r| r.contains("agents")).unwrap();
-        let context_y = rows.iter().position(|r| r.contains("CONTEXT")).unwrap();
-        assert!(
-            context_y < agents_y,
-            "CONTEXT ({context_y}) must sit above agents ({agents_y})"
         );
     }
 
