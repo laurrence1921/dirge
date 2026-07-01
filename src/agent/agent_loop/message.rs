@@ -57,6 +57,8 @@ pub enum ContentBlock {
         text: String,
     },
     Thinking {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         text: String,
     },
     ToolCall {
@@ -669,6 +671,43 @@ mod tests {
         assert_eq!(
             loop_message_to_value(&LoopMessage::Custom(custom.clone())),
             custom
+        );
+    }
+
+    /// `ContentBlock::Thinking` carries an optional provider-assigned
+    /// reasoning id (`rs_…`) so OpenAI Responses reasoning can be replayed
+    /// across turns. The field is omitted when absent, and old transcripts
+    /// written before it existed deserialize to `None`.
+    #[test]
+    fn thinking_block_reasoning_id_round_trips() {
+        // With an id: serialises with `id` and round-trips.
+        let with_id = ContentBlock::Thinking {
+            id: Some("rs_abc".to_string()),
+            text: "secret reasoning".to_string(),
+        };
+        let v = serde_json::to_value(&with_id).unwrap();
+        assert_eq!(v["type"], "thinking");
+        assert_eq!(v["text"], "secret reasoning");
+        assert_eq!(v["id"], "rs_abc");
+        assert_eq!(serde_json::from_value::<ContentBlock>(v).unwrap(), with_id);
+
+        // Without an id: `id` is omitted.
+        let no_id = ContentBlock::Thinking {
+            id: None,
+            text: "no id".to_string(),
+        };
+        let v = serde_json::to_value(&no_id).unwrap();
+        assert!(v.get("id").is_none());
+        assert_eq!(serde_json::from_value::<ContentBlock>(v).unwrap(), no_id);
+
+        // Legacy transcript shape (no `id` key) deserialises to id=None.
+        let legacy = serde_json::json!({"type": "thinking", "text": "legacy"});
+        assert_eq!(
+            serde_json::from_value::<ContentBlock>(legacy).unwrap(),
+            ContentBlock::Thinking {
+                id: None,
+                text: "legacy".to_string(),
+            }
         );
     }
 

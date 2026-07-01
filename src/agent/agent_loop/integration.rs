@@ -239,7 +239,7 @@ pub fn rig_message_to_loop_messages(m: rig::completion::Message) -> Vec<LoopMess
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        blocks.push(ContentBlock::Thinking { text });
+                        blocks.push(ContentBlock::Thinking { id: None, text });
                     }
                     AssistantContent::Image(_) => {}
                 }

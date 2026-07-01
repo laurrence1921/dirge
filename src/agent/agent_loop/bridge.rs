@@ -384,7 +384,7 @@ impl EventBridge {
                             .content
                             .iter()
                             .filter_map(|b| match b {
-                                ContentBlock::Thinking { text } => Some(text.as_str()),
+                                ContentBlock::Thinking { text, .. } => Some(text.as_str()),
                                 _ => None,
                             })
                             .collect::<Vec<_>>()

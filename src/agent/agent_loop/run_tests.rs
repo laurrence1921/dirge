@@ -2045,6 +2045,7 @@ fn scavenge_source_recovers_dsml_invoke_from_text_only() {
 fn scavenge_source_concatenates_thinking_and_text() {
     let blocks = vec![
         ContentBlock::Thinking {
+            id: None,
             text: "Plan: call list_dir.".to_string(),
         },
         ContentBlock::Text {

@@ -482,11 +482,23 @@ fn value_to_assistant_content(
             Some(AssistantContent::text(text))
         }
         "thinking" => {
-            if !include_reasoning {
+            let text = obj.get("text").and_then(|t| t.as_str())?;
+            let id = obj
+                .get("id")
+                .and_then(|i| i.as_str())
+                .map(|i| i.to_string());
+            // OpenAI's Responses API requires a provider-generated id on
+            // every replayed reasoning item. When we have one, send the
+            // reasoning back so it persists across turns; when we don't
+            // (older transcripts, or a provider that never emitted one)
+            // drop the block for Responses-API providers rather than emit
+            // one rig will reject.
+            if !include_reasoning && id.is_none() {
                 return None;
             }
-            let text = obj.get("text").and_then(|t| t.as_str())?;
-            Some(AssistantContent::Reasoning(Reasoning::new(text)))
+            let mut reasoning = Reasoning::new(text);
+            reasoning.id = id;
+            Some(AssistantContent::Reasoning(reasoning))
         }
         "toolCall" => {
             let id = obj.get("id").and_then(|t| t.as_str())?.to_string();
@@ -802,6 +814,26 @@ mod tests {
             value_to_rig_message_for_provider(&v, Some("openai")).is_none(),
             "OpenAI Responses rejects historical reasoning without provider-generated IDs"
         );
+    }
+
+    /// OpenAI's Responses API accepts reasoning items that carry a
+    /// provider-generated id, so a thinking block WITH an id is preserved
+    /// (not dropped) for the openai provider. This is what lets reasoning
+    /// survive across turns instead of being discarded.
+    #[test]
+    fn openai_assistant_thinking_with_id_is_preserved() {
+        let v = serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "thinking", "text": "let me think", "id": "rs_abc"}],
+        });
+        let msg = value_to_rig_message_for_provider(&v, Some("openai")).expect("must convert");
+        match msg {
+            Message::Assistant { content, .. } => match content.first() {
+                AssistantContent::Reasoning(r) => assert_eq!(r.id.as_deref(), Some("rs_abc")),
+                other => panic!("expected Reasoning, got {other:?}"),
+            },
+            _ => panic!("expected Assistant"),
+        }
     }
 
     #[test]

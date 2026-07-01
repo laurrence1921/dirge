@@ -19,6 +19,7 @@ fn assistant_with_text(s: &str) -> AssistantMessage {
 fn assistant_with_thinking(s: &str) -> AssistantMessage {
     AssistantMessage::new(
         vec![ContentBlock::Thinking {
+            id: None,
             text: s.to_string(),
         }],
         StopReason::Stop,
@@ -296,6 +297,7 @@ fn text_and_reasoning_tracked_independently() {
     let _ = bridge.translate(LoopEvent::MessageUpdate {
         message: AssistantMessage::new(
             vec![ContentBlock::Thinking {
+                id: None,
                 text: "thinking".to_string(),
             }],
             StopReason::Stop,
@@ -307,6 +309,7 @@ fn text_and_reasoning_tracked_independently() {
         message: AssistantMessage::new(
             vec![
                 ContentBlock::Thinking {
+                    id: None,
                     text: "thinking".to_string(),
                 },
                 ContentBlock::Text {

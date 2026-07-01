@@ -248,7 +248,7 @@ where
                 Ok(StreamedAssistantContent::ReasoningDelta { id: _, reasoning }) => {
                     match current_thinking_idx {
                         Some(idx) => {
-                            if let Some(ContentBlock::Thinking { text }) =
+                            if let Some(ContentBlock::Thinking { text, .. }) =
                                 partial.content.get_mut(idx)
                             {
                                 text.push_str(&reasoning);
@@ -260,7 +260,10 @@ where
                         }
                         None => {
                             current_thinking_idx = Some(partial.content.len());
-                            partial.content.push(ContentBlock::Thinking { text: reasoning });
+                            partial.content.push(ContentBlock::Thinking {
+                                id: None,
+                                text: reasoning,
+                            });
                             current_text_idx = None;
                             yield StreamEvent::Delta {
                                 partial: partial.clone(),
@@ -270,12 +273,16 @@ where
                     }
                 }
                 Ok(StreamedAssistantContent::Reasoning(r)) => {
-                    // Complete reasoning block emitted in one shot.
-                    // `r.content` is `Vec<ReasoningContent>` — a
-                    // tagged enum with Text / Encrypted / Redacted /
-                    // Summary variants. We surface plain-text and
-                    // Summary; encrypted/redacted payloads are
-                    // opaque (no display benefit) so we skip them.
+                    // Complete reasoning block. For OpenAI Responses this
+                    // arrives as the `output_item.done` event carrying the
+                    // provider-assigned reasoning id (`rs_…`), AFTER the
+                    // `reasoning_summary_text.delta` chunks have already
+                    // streamed into an in-progress thinking block. We attach
+                    // that id to the in-progress block rather than emit a
+                    // duplicate; the streamed delta text is authoritative (it
+                    // is what the user saw live, and OpenAI's done summary just
+                    // repeats it).
+                    let id = r.id.clone();
                     let text: String = r
                         .content
                         .iter()
@@ -290,7 +297,23 @@ where
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
-                    partial.content.push(ContentBlock::Thinking { text });
+                    let mut id = id;
+                    let attached = match current_thinking_idx {
+                        Some(idx) => match partial.content.get_mut(idx) {
+                            Some(ContentBlock::Thinking { id: slot, .. }) => {
+                                if slot.is_none() {
+                                    *slot = id.take();
+                                }
+                                true
+                            }
+                            _ => false,
+                        },
+                        None => false,
+                    };
+                    if !attached {
+                        // One-shot reasoning (no preceding deltas): emit it.
+                        partial.content.push(ContentBlock::Thinking { id, text });
+                    }
                     current_thinking_idx = None;
                     current_text_idx = None;
                     yield StreamEvent::Delta {
@@ -810,10 +833,44 @@ mod tests {
         );
         match events.last().unwrap() {
             StreamEvent::Done { message, .. } => {
-                if let ContentBlock::Thinking { text } = &message.content[0] {
+                if let ContentBlock::Thinking { text, .. } = &message.content[0] {
                     assert_eq!(text, "Let me think about this");
                 } else {
                     panic!("expected thinking");
+                }
+            }
+            _ => panic!("expected Done"),
+        }
+    }
+
+    /// A complete reasoning block (`Reasoning(r)`) that follows its deltas
+    /// attaches its provider-assigned id to the in-progress thinking block
+    /// instead of emitting a duplicate. The streamed delta text (what the
+    /// user saw live) is authoritative; the done block's summary text — which
+    /// OpenAI sends redundantly — is not appended. The id is what OpenAI's
+    /// Responses API needs to replay reasoning across turns.
+    #[tokio::test]
+    async fn wraps_reasoning_done_attaches_id_without_duplicate() {
+        let mut reasoning = Reasoning::new("redundant full summary");
+        reasoning.id = Some("rs_done".to_string());
+        let raw = raw_stream(vec![
+            Ok(StreamedAssistantContent::ReasoningDelta {
+                id: None,
+                reasoning: "Let me think".to_string(),
+            }),
+            Ok(StreamedAssistantContent::Reasoning(reasoning)),
+        ]);
+        let events = drain(wrap_streamed_assistant(raw, None, None)).await;
+        match events.last().unwrap() {
+            StreamEvent::Done { message, .. } => {
+                // Exactly one thinking block: deltas + done merged, id attached.
+                assert_eq!(message.content.len(), 1, "expected a single thinking block");
+                match &message.content[0] {
+                    ContentBlock::Thinking { id, text } => {
+                        assert_eq!(id.as_deref(), Some("rs_done"));
+                        assert_eq!(text, "Let me think");
+                    }
+                    other => panic!("expected thinking, got {other:?}"),
                 }
             }
             _ => panic!("expected Done"),
@@ -892,7 +949,7 @@ mod tests {
             .content
             .iter()
             .filter_map(|b| match b {
-                ContentBlock::Thinking { text } => Some(text.as_str()),
+                ContentBlock::Thinking { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -1311,7 +1368,7 @@ mod tests {
         ));
         assert!(matches!(
             &final_msg.content[1],
-            ContentBlock::Thinking { text } if text == "thinking"
+            ContentBlock::Thinking { text, .. } if text == "thinking"
         ));
         assert!(matches!(
             &final_msg.content[2],
